@@ -47,7 +47,7 @@ export function remainingTime(context: ExecutionContext): number {
 }
 
 export async function credentialArgs(platform: Platform): Promise<string[]> {
-  const prefix = platform === "bilibili" ? "BILIBILI" : "YOUTUBE";
+  const prefix = { bilibili: "BILIBILI", youtube: "YOUTUBE", xiaohongshu: "XIAOHONGSHU" }[platform];
   const cookieFile = process.env[`${prefix}_COOKIES_FILE`]?.trim();
   if (cookieFile) {
     const stat = await fs.stat(cookieFile).catch(() => undefined);

@@ -2,7 +2,7 @@
 
 [简体中文](./README.zh-CN.md) · English
 
-Catalyst is a video research MCP server for existing agents. It brings Bilibili and YouTube into a shared workflow for language, visual, or multimodal questions, with explicit evidence sources, source-time ranges, availability states, and analysis limits.
+Catalyst is a video research MCP server for existing agents. It brings Bilibili, YouTube, and accessible Xiaohongshu video notes into a shared workflow for language, visual, or multimodal questions, with explicit evidence sources, source-time ranges, availability states, and analysis limits.
 
 Catalyst evolves from [Bilibili Video Research](https://github.com/7oMB2006/Bilibili-Video-Research), retaining its Git history and existing BVR tools. This is an early preview, installed from source.
 
@@ -12,8 +12,9 @@ Catalyst evolves from [Bilibili Video Research](https://github.com/7oMB2006/Bili
 | --- | --- |
 | Bilibili | Public video metadata, available captions or audio fallback, media research, and optional sampled comments. Access and source quality depend on the video and authorized account. |
 | YouTube | Public video metadata, available manual or automatic JSON3 captions, and media research. Comment sampling reports `unsupported` in this preview. |
+| Xiaohongshu (experimental) | Video-note metadata and media research via original note/share URLs or copied share text. Language mode uses audio/ASR; platform captions and comments report `unsupported`. Availability depends on the particular link and session. |
 | Local files | Existing visual analysis and silent-window inspection tools. |
-| Douyin and Xiaohongshu | Acquisition research candidates; no preview support claim. |
+| Douyin | Acquisition research candidate; no preview support claim. |
 
 Discovery, cross-platform search, and long-running task scheduling are later work. The host agent owns the overall task and conversation.
 
@@ -97,6 +98,8 @@ source_quality: { profile: "high", on_unavailable: "error" }
 
 Profiles inherited from BVR are `standard` (1080p30), `high` (1440p30), and `custom` with explicit resolution/fps. A missing target fails by default; `on_unavailable: "warn"` allows a reported fallback. Requesting higher quality cannot recover detail absent from the original video.
 
+For Xiaohongshu, paste an `/explore/<note-id>` or `/discovery/item/<note-id>` URL, an official `xhslink.com`/`xhslink.cn` short URL, or share text containing exactly one such URL into `url`. Keep the original share query parameters: acquisition may need them. HTTP short links are upgraded to HTTPS before fetching; redirects stay on approved HTTPS hosts. Public results omit share parameters and signed media URLs. Image notes, collections, live streams and sources without a reliable duration are unsupported. An empty format list reports `MEDIA_UNAVAILABLE`; it does not establish that the source is an image note. See the [live observations](./docs/validation.md) for link-dependent access differences.
+
 ## Evidence and results
 
 The generic tool returns structured results together with readable text. The result records video identity, requested mode/window, per-capability states, evidence, findings, warnings, errors, and processing information.
@@ -119,7 +122,7 @@ The existing tools remain available:
 
 The legacy Bilibili tool retains its strict default 1080p30 quality policy. The generic tool's default is available source quality. Existing `STEPFUN_*`, `GEMINI_*`, and `BILIBILI_*` settings remain supported.
 
-Authentication is explicit and platform-scoped. Set an authorized cookies file or browser source only for its intended platform; the YouTube adapter does not reuse Bilibili's credentials. Public metadata, selected captions/audio/video, and optional community content may be sent to the configured model provider.
+Authentication is explicit and platform-scoped. Set an authorized cookies file or browser source only for its intended platform; adapters do not reuse another platform's credentials. Xiaohongshu uses `XIAOHONGSHU_COOKIES_FILE` or `XIAOHONGSHU_COOKIES_FROM_BROWSER` when explicitly configured. Public metadata, selected captions/audio/video, and optional community content may be sent to the configured model provider.
 
 ## Development
 

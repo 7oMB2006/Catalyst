@@ -1,7 +1,7 @@
 import type { MediaDetail } from "./video-analysis.js";
 import type { SourceQualityReport, SourceQualityRequest } from "./media-quality.js";
 
-export type Platform = "bilibili" | "youtube";
+export type Platform = "bilibili" | "youtube" | "xiaohongshu";
 export type ResearchMode = "language" | "vision" | "multimodal";
 export type Availability = "available" | "absent" | "unsupported" | "disabled" | "not_requested" | "error" | "auth_required" | "blocked" | "unknown";
 export interface Capability { status: Availability; reason?: string }

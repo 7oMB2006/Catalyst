@@ -34,6 +34,13 @@ test("stdio exposes legacy tools and returns structured routing failures", { tim
     const text = response.content.find((item) => item.type === "text");
     assert.ok(text && text.type === "text");
     assert.deepEqual(JSON.parse(text.text), result);
+    const ambiguousShare = CallToolResultSchema.parse(await client.callTool({
+      name: "analyze_video_url",
+      arguments: { url: "视频 https://xhslink.cn/o/one?xsec_token=fixture-private-token 另一个 https://xhslink.com/a/two", question: "What is shown?", mode: "vision" },
+    }));
+    assert.equal(ambiguousShare.isError, true);
+    assert.equal((ambiguousShare.structuredContent?.errors as Array<Record<string, unknown>>)[0].code, "INVALID_URL");
+    assert.doesNotMatch(JSON.stringify(ambiguousShare), /fixture-private-token/);
   } finally {
     await client.close();
   }

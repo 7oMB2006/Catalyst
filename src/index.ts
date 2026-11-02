@@ -126,9 +126,9 @@ server.registerTool("analyze_bilibili_video", {
 
 server.registerTool("analyze_video_url", {
   title: "Research a Video with Catalyst",
-  description: "Research a public Bilibili or YouTube video using a shared language, vision or multimodal workflow. Returns structured evidence, capability states, source-time precision and explicitly unverified model findings. Source quality follows the available source unless explicitly requested. Comments are opt-in.",
+  description: "Research a public Bilibili or YouTube video, or an accessible Xiaohongshu video note, using a shared language, vision or multimodal workflow. Xiaohongshu accepts note links, official short links or full share text; platform captions and comments are unsupported and language mode uses ASR. Live Xiaohongshu acquisition remains experimental. Returns structured evidence, capability states, source-time precision and explicitly unverified model findings. Source quality follows the available source unless explicitly requested. Comments are opt-in.",
   inputSchema: {
-    url: z.string().url(),
+    url: z.string().min(1).max(8192).describe("Public video URL, or Xiaohongshu share text containing exactly one supported note/short URL. Keep original share query parameters for acquisition."),
     question: z.string().min(3),
     mode: z.enum(["language", "vision", "multimodal"]),
     media_detail: z.enum(["low", "default"]).default("default"),

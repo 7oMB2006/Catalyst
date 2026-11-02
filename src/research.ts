@@ -1,6 +1,6 @@
 import { performance } from "node:perf_hooks";
 import type { Capabilities, Evidence, ExecutionContext, Finding, MediaAsset, PlatformAdapter, ResearchFailure, ResearchRequest, ResearchResult, SourceContext } from "./contracts.js";
-import { getAdapter } from "./adapters/index.js";
+import { getAdapter, parseSourceUrl } from "./adapters/index.js";
 import { analyzeMediaWithProvider, analyzeTextWithProvider, createAudioTrack, createSilentVideo, createSilentWindow, createVideoWindow, getConfiguredVideoProvider, redactSensitiveText, removeTemporaryWindow, transcribeAudioWithProvider } from "./video-analysis.js";
 
 // The compatibility BVR tool retains its broad scan. The new cross-platform
@@ -165,9 +165,11 @@ export async function researchVideo(request: ResearchRequest, adapters?: Platfor
   };
   try {
     validateRequest(request);
-    const url = new URL(request.url);
+    const url = parseSourceUrl(request.url);
+    request = { ...request, url: url.toString() };
+    result.request.url = cleanUrl(request.url);
     const adapter = adapters ? adapters.find((candidate) => candidate.supports(url)) : getAdapter(request.url);
-    if (!adapter) throw new ResearchError("UNSUPPORTED_PLATFORM", "Only supported Bilibili or YouTube video URLs can be researched.");
+    if (!adapter) throw new ResearchError("UNSUPPORTED_PLATFORM", "Only supported Bilibili, YouTube or Xiaohongshu video-note URLs can be researched.");
     const resolved = await runStage("resolve", () => adapter.resolve(request, context));
     result.video = { ...resolved.video, sourceUrl: cleanUrl(resolved.video.sourceUrl), canonicalUrl: cleanUrl(resolved.video.canonicalUrl) };
     result.capabilities = structuredClone(resolved.capabilities);
