@@ -95,7 +95,7 @@ function prompt(request: ResearchRequest, evidence: Evidence[]): string {
   ].join("\n\n");
 }
 
-function collectFindings(raw: string, result: ResearchResult): boolean {
+export function collectFindings(raw: string, result: { evidence: Array<{ id: string; kind: string }>; analysis: string | null; findings: Finding[]; warnings: string[] }, primaryKinds: string[] = ["caption", "asr", "visual", "multimodal"]): boolean {
   const text = redactSensitiveText(raw);
   const json = text.trim().replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/, "");
   let data: { analysis?: unknown; findings?: unknown };
@@ -119,7 +119,7 @@ function collectFindings(raw: string, result: ResearchResult): boolean {
     const suppliedIds: unknown[] = item.evidence_ids;
     const ids: string[] = [...new Set(suppliedIds.filter((id): id is string => typeof id === "string"))];
     const valid = ids.filter((id) => allowed.has(id));
-    const primary = valid.some((id) => ["caption", "asr", "visual", "multimodal"].includes(allowed.get(id)!.kind));
+    const primary = valid.some((id) => primaryKinds.includes(allowed.get(id)!.kind));
     if (!valid.length || !primary || valid.length !== ids.length) { discarded++; continue; }
     const limitations = Array.isArray(item.limitations) ? item.limitations.filter((value: unknown): value is string => typeof value === "string") : [];
     findings.push({ id: `finding:${findings.length + 1}`, statement: item.statement.trim(), evidence_ids: valid, verification: "unverified", limitations: [...limitations, "Model interpretation; citation IDs are validated structurally, not semantically."] });

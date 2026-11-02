@@ -16,9 +16,12 @@ test("stdio exposes legacy tools and returns structured routing failures", { tim
     await client.connect(transport);
     const tools = await client.listTools();
     assert.deepEqual(tools.tools.map((tool) => tool.name).sort(), [
-      "analyze_bilibili_video", "analyze_video", "analyze_video_url", "inspect_video_window",
+      "analyze_bilibili_video", "analyze_video", "analyze_video_url", "analyze_xiaohongshu_note", "inspect_video_window",
     ]);
     assert.ok(tools.tools.find((tool) => tool.name === "analyze_video_url")?.outputSchema);
+    const noteTool = tools.tools.find((tool) => tool.name === "analyze_xiaohongshu_note");
+    assert.ok(noteTool?.outputSchema);
+    assert.equal((noteTool.inputSchema.properties?.mode as Record<string, unknown>).default, "text");
     const response = CallToolResultSchema.parse(await client.callTool({
       name: "analyze_video_url",
       arguments: { url: "https://example.com/video", question: "What is shown?", mode: "vision" },
@@ -41,6 +44,19 @@ test("stdio exposes legacy tools and returns structured routing failures", { tim
     assert.equal(ambiguousShare.isError, true);
     assert.equal((ambiguousShare.structuredContent?.errors as Array<Record<string, unknown>>)[0].code, "INVALID_URL");
     assert.doesNotMatch(JSON.stringify(ambiguousShare), /fixture-private-token/);
+    const noteResponse = CallToolResultSchema.parse(await client.callTool({
+      name: "analyze_xiaohongshu_note",
+      arguments: {
+        url: "https://xhslink.cn/o/one?xsec_token=fixture-private-token，另一个：https://xhslink.cn/o/two",
+        question: "What does the author recommend?",
+      },
+    }));
+    assert.equal(noteResponse.isError, true);
+    assert.equal(noteResponse.structuredContent?.content_type, "unknown");
+    assert.equal(noteResponse.structuredContent?.status, "unavailable");
+    assert.equal(noteResponse.structuredContent?.result, null);
+    assert.equal((noteResponse.structuredContent?.errors as Array<Record<string, unknown>>)[0].code, "INVALID_URL");
+    assert.doesNotMatch(JSON.stringify(noteResponse), /fixture-private-token/);
   } finally {
     await client.close();
   }

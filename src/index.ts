@@ -5,6 +5,8 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { z } from "zod";
 import { createSilentVideo, analyzeWithProvider, createSilentWindow, removeTemporaryWindow } from "./video-analysis.js";
 import { researchBilibiliVideo } from "./bilibili.js";
+import { researchXiaohongshuNote } from "./note-research.js";
+import { xiaohongshuResearchResultShape } from "./note-result-schema.js";
 import { researchVideo } from "./research.js";
 import { researchResultShape } from "./result-schema.js";
 
@@ -155,6 +157,25 @@ server.registerTool("analyze_video_url", {
     structuredContent: { ...research },
     isError: research.status === "unavailable",
   };
+});
+
+server.registerTool("analyze_xiaohongshu_note", {
+  title: "Research a Xiaohongshu Note",
+  description: "Research Xiaohongshu image/text notes first, automatically routing confirmed video notes to the existing video workflow. Accepts original links or copied share text. The default text mode reads the note body and OCR of all selected image pages; vision reads pictures and diagrams; combined uses both. Citations use 1-based original image page numbers, never invented timestamps. Local Apple Vision OCR is preferred when available, with configured-provider OCR fallback. Comments are unsupported. Long notes can be selected by page range; no pages are silently skipped. Model observations and OCR remain unverified.",
+  inputSchema: {
+    url: z.string().min(1).max(8192).describe("Original Xiaohongshu note/short URL or share text containing one link; retain original share query parameters."),
+    question: z.string().min(3),
+    mode: z.enum(["text", "vision", "combined"]).default("text"),
+    language: z.string().min(2).max(20).optional(),
+    start_page: z.number().int().positive().optional().describe("1-based original image start page; provide with end_page. Only this range is researched."),
+    end_page: z.number().int().positive().optional().describe("Original image end page, inclusive. At most 50 images per request."),
+    timeout_seconds: z.number().min(5).max(600).default(300),
+  },
+  outputSchema: xiaohongshuResearchResultShape,
+  annotations: { readOnlyHint: true },
+}, async ({ url, question, mode, language, start_page, end_page, timeout_seconds }, extra) => {
+  const research = await researchXiaohongshuNote({ url, question, mode, language, startPage: start_page, endPage: end_page, timeoutSeconds: timeout_seconds }, undefined, extra.signal);
+  return { content: [{ type: "text" as const, text: JSON.stringify(research, null, 2) }], structuredContent: { ...research }, isError: research.status === "unavailable" };
 });
 
 await server.connect(new StdioServerTransport());

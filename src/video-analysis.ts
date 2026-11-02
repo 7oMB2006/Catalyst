@@ -194,6 +194,74 @@ export async function createAudioTrack(videoPath: string, context?: ExecutionCon
   }
 }
 
+const MAX_IMAGE_BYTES = 12 * 1024 * 1024;
+const MAX_INLINE_IMAGE_REQUEST_BYTES = 19_000_000;
+
+async function inlineImage(filename: string, context?: ExecutionContext): Promise<{ data: string; mimeType: string }> {
+  remaining(context);
+  const handle = await fs.open(filename, "r");
+  try {
+    const stat = await handle.stat();
+    if (!stat.isFile() || stat.size <= 0 || stat.size > MAX_IMAGE_BYTES) {
+      throw Object.assign(new Error("Each image must be a nonempty regular file of at most 12 MiB."), { code: "RESOURCE_LIMIT" });
+    }
+    // Read through a hard buffer bound even if the file grows after stat().
+    const bytes = Buffer.alloc(Math.min(MAX_IMAGE_BYTES + 1, stat.size + 1));
+    let size = 0;
+    while (size < bytes.length) {
+      remaining(context);
+      const part = await handle.read(bytes, size, bytes.length - size, null);
+      if (!part.bytesRead) break;
+      size += part.bytesRead;
+    }
+    if (size > MAX_IMAGE_BYTES || size > stat.size) {
+      throw Object.assign(new Error("The image changed or exceeded its size bound while being read."), { code: "RESOURCE_LIMIT" });
+    }
+    const value = bytes.subarray(0, size);
+    const mimeType = value.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10])) ? "image/png"
+      : value[0] === 255 && value[1] === 216 && value[2] === 255 ? "image/jpeg"
+      : ["GIF87a", "GIF89a"].includes(value.subarray(0, 6).toString("ascii")) ? "image/gif"
+      : value.subarray(0, 4).toString("ascii") === "RIFF" && value.subarray(8, 12).toString("ascii") === "WEBP" ? "image/webp" : undefined;
+    if (!mimeType) throw Object.assign(new Error("Image input must contain JPEG, PNG, GIF or WebP bytes; its filename alone is not trusted."), { code: "INVALID_MEDIA" });
+    return { data: value.toString("base64"), mimeType };
+  } finally { await handle.close(); }
+}
+
+/** Inline image inputs use a separate path from video/audio upload and transcription. */
+export async function analyzeImagesWithProvider(paths: string[], prompt: string, options: ProviderOptions = {}): Promise<string> {
+  const left = remaining(options.context) ?? PROCESSING_TIMEOUT_MS;
+  if (!paths.length || paths.length > 4) throw Object.assign(new Error("An image request must contain between one and four pages."), { code: "RESOURCE_LIMIT" });
+  const context: ExecutionContext = {
+    signal: options.context ? AbortSignal.any([options.context.signal, AbortSignal.timeout(left)]) : AbortSignal.timeout(left),
+    deadlineMs: options.context?.deadlineMs ?? Date.now() + left,
+  };
+  const images = [];
+  let requestBytes = Buffer.byteLength(prompt, "utf8") + 1024;
+  for (const filename of paths) {
+    const input = await inlineImage(filename, context);
+    requestBytes += input.data.length + 256;
+    if (requestBytes >= MAX_INLINE_IMAGE_REQUEST_BYTES) throw Object.assign(new Error("Inline image request exceeds its 19 MB budget; select fewer or smaller pages."), { code: "RESOURCE_LIMIT" });
+    images.push(input);
+  }
+  const effective = { ...options, context };
+  if (selectedProvider() === "stepfun") {
+    return analyzeContentWithStepfun([
+      { type: "text", text: prompt },
+      ...images.map((input) => ({ type: "image_url", image_url: { url: `data:${input.mimeType};base64,${input.data}` } })),
+    ], effective);
+  }
+  const apiKey = process.env.GEMINI_API_KEY;
+  if (!apiKey) throw new Error("GEMINI_API_KEY is not configured for image research.");
+  const ai = new GoogleGenAI({ apiKey });
+  const response = await ai.models.generateContent({
+    model: process.env.GEMINI_VIDEO_MODEL ?? "gemini-2.5-flash",
+    config: { abortSignal: context.signal },
+    contents: [{ role: "user", parts: [{ text: prompt }, ...images.map((input) => ({ inlineData: input }))] }],
+  });
+  if (!response.text) throw new Error("Gemini returned no text response for these images.");
+  return response.text;
+}
+
 export async function analyzeMediaWithProvider(mediaPath: string, prompt: string, mediaDetail: MediaDetail = "default", options: ProviderOptions = {}): Promise<string> {
   remaining(options.context);
   await assertReadableMedia(mediaPath);
