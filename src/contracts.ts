@@ -49,6 +49,7 @@ export interface ResearchRequest {
 export interface ExecutionContext { signal: AbortSignal; deadlineMs: number }
 export interface MediaAsset {
   path: string;
+  durationSeconds?: number;
   width?: number;
   height?: number;
   fps?: number;

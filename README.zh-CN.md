@@ -92,6 +92,23 @@ analyze_video_url({
 
 `start_seconds` 与 `end_seconds` 必须成对提供。对超过 900 秒的媒体，通用工具要求显式指定不超过 900 秒的区间，否则返回 `WINDOW_REQUIRED`；仅使用字幕的语言研究不受这个媒体上传限制。旧 BVR 入口继续保留长视觉视频的粗扫与精扫。`language` 参数可指定优先字幕或转写语言。每个平台分别报告素材能力和获取状态，评论不可用不会自动使视频研究失败。
 
+长课程、访谈和讲座可使用 `analyze_long_video_url`。它完整规划所选范围的概览窗口，再精读相关片段，分别返回概览、精读和未完成范围：
+
+```text
+analyze_long_video_url({
+  url: "https://www.bilibili.com/video/BV1DTxXzUEvW/?p=17",
+  question: "这一节课介绍了哪些自注意力机制，各自解决什么问题？",
+  mode: "multimodal",
+  language: "zh",
+  segment_seconds: 600,
+  max_segments: 12,
+  max_detail_windows: 2,
+  timeout_seconds: 1800
+})
+```
+
+概览采用最高 360p、1 fps 的有界媒体；精读采用最高 720p、5 fps。完整概览不等于每帧或每个公式均已读清。默认累计获取文件预算为 512 MiB，单份准备后的媒体最多 32 MiB；默认期限 900 秒，可调至 1,800 秒，宿主超时应更长。预算或期限不足会保留部分结果。媒体按区间获取，跨请求缓存尚未实现。详见[长视频设计与验收](./docs/long-video.md)。
+
 新工具默认采用实际可用源，并记录真实质量。视觉和多模态获取优先选择不超过 1080p 的格式；发生源格式回退时，应查看实际返回的尺寸。媒体文件预算默认为 256 MiB，可通过 `CATALYST_MAX_MEDIA_MB` 调整。获取流程可能先下载完整源文件，再裁剪所选区间；本预览版没有跨请求的媒体或转写缓存。需要质量门槛时显式指定，例如：
 
 ```text

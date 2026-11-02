@@ -1,0 +1,24 @@
+import { z } from "zod";
+import { researchResultShape } from "./result-schema.js";
+
+const window = z.object({ start_seconds: z.number().nonnegative(), end_seconds: z.number().positive() });
+export const longVideoResultShape = {
+  ...researchResultShape,
+  plan: z.object({
+    strategy: z.literal("segmented_overview_then_detail"), requested_window: window,
+    segment_seconds: z.number(), overview_windows: z.array(window), max_detail_windows: z.number(),
+    detail_window_seconds: z.number(), max_download_bytes: z.number(), window_timeout_seconds: z.number(),
+  }).nullable(),
+  segments: z.array(z.object({
+    id: z.string(), phase: z.enum(["overview", "detail"]), window,
+    status: z.enum(["pending", "complete", "partial", "failed"]),
+    basis: z.enum(["captions", "audio", "video", "audio_video"]),
+    evidence_ids: z.array(z.string()), analysis: z.string().nullable(),
+    relevance_score: z.number().optional(), proposed_focus_offset_seconds: z.number().optional(), error: z.string().optional(),
+  })),
+  coverage: z.object({
+    overview: z.array(window), detail: z.array(window), unreviewed: z.array(window),
+    overview_complete: z.boolean(), limitations: z.array(z.string()),
+  }),
+};
+export const longVideoResultSchema = z.object(longVideoResultShape);

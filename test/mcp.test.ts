@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { CallToolResultSchema } from "@modelcontextprotocol/sdk/types.js";
+import { longVideoResultSchema } from "../src/long-video-schema.js";
 
 test("stdio exposes legacy tools and returns structured routing failures", { timeout: 20_000 }, async () => {
   const transport = new StdioClientTransport({
@@ -16,9 +17,21 @@ test("stdio exposes legacy tools and returns structured routing failures", { tim
     await client.connect(transport);
     const tools = await client.listTools();
     assert.deepEqual(tools.tools.map((tool) => tool.name).sort(), [
-      "analyze_bilibili_video", "analyze_video", "analyze_video_url", "analyze_xiaohongshu_note", "inspect_video_window",
+      "analyze_bilibili_video", "analyze_long_video_url", "analyze_video", "analyze_video_url", "analyze_xiaohongshu_note", "inspect_video_window",
     ]);
     assert.ok(tools.tools.find((tool) => tool.name === "analyze_video_url")?.outputSchema);
+    const longTool = tools.tools.find((tool) => tool.name === "analyze_long_video_url");
+    assert.ok(longTool?.outputSchema);
+    assert.equal((longTool.inputSchema.properties?.segment_seconds as Record<string, unknown>).default, 600);
+    const longResponse = CallToolResultSchema.parse(await client.callTool({
+      name: "analyze_long_video_url", arguments: { url: "https://example.com/video?token=fixture-private-token", question: "Which concepts are explained?", mode: "multimodal" },
+    }));
+    assert.equal(longResponse.isError, true);
+    const longResult = longVideoResultSchema.parse(longResponse.structuredContent);
+    assert.equal(longResult.status, "unavailable");
+    assert.equal(longResult.errors[0].code, "UNSUPPORTED_PLATFORM");
+    assert.deepEqual(longResult.segments, []);
+    assert.doesNotMatch(JSON.stringify(longResponse), /fixture-private-token/);
     const noteTool = tools.tools.find((tool) => tool.name === "analyze_xiaohongshu_note");
     assert.ok(noteTool?.outputSchema);
     assert.equal((noteTool.inputSchema.properties?.mode as Record<string, unknown>).default, "text");
