@@ -2,6 +2,8 @@ import { promises as fs } from "node:fs";
 import path from "node:path";
 import { tmpdir } from "node:os";
 import { AcquisitionError, remainingTime } from "../acquisition.js";
+import { ProcessExecutionError, runProcess } from "../process.js";
+import { getFfmpegPath } from "../video-analysis.js";
 import type { ExecutionContext } from "../contracts.js";
 import type { NoteImages, NotePage, NoteResearchRequest, XiaohongshuNoteSource } from "../note-contracts.js";
 import { resolveXiaohongshuUrl } from "./xiaohongshu.js";
@@ -10,6 +12,8 @@ const NOTE_HOSTS = new Set(["xiaohongshu.com", "www.xiaohongshu.com"]);
 const HTML_LIMIT = 8 * 1024 * 1024;
 const IMAGE_LIMIT = 12 * 1024 * 1024;
 const TOTAL_IMAGE_LIMIT = 128 * 1024 * 1024;
+const MAX_IMAGE_PIXELS = 40_000_000;
+const PNG_SIGNATURE = Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]);
 const MAX_REDIRECTS = 5;
 const MAX_PAGES = 128;
 const MOBILE_USER_AGENT = "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Mobile Safari/537.36";
@@ -48,7 +52,7 @@ async function guardedFetch(initial: URL, kind: "note" | "image", context: Execu
     let response: Response;
     try {
       response = await fetch(url, { redirect: "manual", credentials: "omit", signal,
-        headers: { "User-Agent": MOBILE_USER_AGENT, Accept: kind === "note" ? "text/html" : "image/avif,image/webp,image/png,image/jpeg,image/*", Referer: "https://www.xiaohongshu.com/" } });
+        headers: { "User-Agent": MOBILE_USER_AGENT, Accept: kind === "note" ? "text/html" : "image/jpeg,image/png,image/webp,image/gif", Referer: "https://www.xiaohongshu.com/" } });
     } catch (error) {
       signal.throwIfAborted();
       if (error instanceof AcquisitionError) throw error;
@@ -212,6 +216,38 @@ function rasterExtension(bytes: Buffer, mime: string): string {
   throw new AcquisitionError("INVALID_MEDIA", "A note image did not contain a supported raster image signature.");
 }
 
+/** Normalize at acquisition so every OCR/vision backend receives supported bytes. */
+async function normalizeAvif(filename: string, output: string, limit: number, context: ExecutionContext): Promise<{ width: number; height: number; bytes: number }> {
+  if (limit <= 0) throw new AcquisitionError("RESOURCE_LIMIT", "Normalized note images exceed the total byte limit.");
+  try {
+    await runProcess(getFfmpegPath(), [
+      "-hide_banner", "-loglevel", "error", "-nostdin", "-y", "-max_alloc", String(256 * 1024 * 1024),
+      "-protocol_whitelist", "file,pipe", "-max_pixels", String(MAX_IMAGE_PIXELS), "-threads", "1", "-i", filename,
+      "-map", "0:v:0", "-frames:v", "1", "-map_metadata", "-1", "-c:v", "png", "-threads", "1",
+      "-f", "image2", "-update", "1", "-fs", String(limit + 1), output,
+    ], { signal: context.signal, timeout: Math.min(30_000, remainingTime(context)), maxBuffer: 1024 * 1024 });
+  } catch (error) {
+    context.signal.throwIfAborted();
+    if (error instanceof ProcessExecutionError && ["ETIMEDOUT", "ABORT_ERR"].includes(String(error.code))) throw new AcquisitionError("TIMEOUT", "AVIF normalization exceeded its processing deadline.", true);
+    if (error instanceof ProcessExecutionError && error.code === "ENOENT") throw new AcquisitionError("DEPENDENCY_MISSING", "AVIF normalization needs a working FFmpeg executable; check FFMPEG_PATH.");
+    throw new AcquisitionError("IMAGE_CONVERSION_FAILED", "FFmpeg could not normalize this AVIF page to PNG within the decoding limits; use an FFmpeg build with AVIF decoding support.");
+  }
+  remainingTime(context);
+  const stat = await fs.stat(output).catch(() => undefined);
+  if (!stat?.isFile()) throw new AcquisitionError("IMAGE_CONVERSION_FAILED", "AVIF normalization did not produce an available PNG image.");
+  // FFmpeg's -fs can overshoot by a packet; reject oversized output explicitly.
+  if (stat.size <= 0 || stat.size > limit) throw new AcquisitionError("RESOURCE_LIMIT", "The normalized note image exceeds its byte limit.");
+  const handle = await fs.open(output, "r").catch(() => undefined);
+  if (!handle) throw new AcquisitionError("IMAGE_CONVERSION_FAILED", "The normalized note image could not be opened for validation.");
+  const header = Buffer.alloc(24);
+  try { await handle.read(header, 0, header.length, 0); } finally { await handle.close(); }
+  if (!header.subarray(0, 8).equals(PNG_SIGNATURE) || header.toString("ascii", 12, 16) !== "IHDR") throw new AcquisitionError("INVALID_MEDIA", "AVIF normalization did not produce a PNG image.");
+  const width = header.readUInt32BE(16), height = header.readUInt32BE(20);
+  if (width <= 0 || height <= 0 || width * height > MAX_IMAGE_PIXELS) throw new AcquisitionError("RESOURCE_LIMIT", "The normalized note image exceeds its decoded pixel limit.");
+  await fs.rm(filename);
+  return { width, height, bytes: stat.size };
+}
+
 export async function acquireNoteImages(source: XiaohongshuNoteSource, pages: number[], context: ExecutionContext): Promise<NoteImages> {
   context.signal.throwIfAborted();
   remainingTime(context);
@@ -226,6 +262,7 @@ export async function acquireNoteImages(source: XiaohongshuNoteSource, pages: nu
   const directory = await fs.mkdtemp(path.join(tmpdir(), "catalyst-note-images-"));
   const acquired: NoteImages["pages"] = [];
   let bytes = 0;
+  let retainedBytes = 0;
   try {
     for (const page of selected) {
       const budget = Math.min(IMAGE_LIMIT, TOTAL_IMAGE_LIMIT - bytes);
@@ -233,12 +270,24 @@ export async function acquireNoteImages(source: XiaohongshuNoteSource, pages: nu
       const { response, signal } = await guardedFetch(imageUrl(page.url, true), "image", context);
       const body = await boundedBody(response, budget, signal);
       const extension = rasterExtension(body, (response.headers.get("content-type") ?? "").split(";")[0].trim().toLowerCase());
-      const filename = path.join(directory, `page-${String(page.index).padStart(3, "0")}.${extension}`);
+      let filename = path.join(directory, `page-${String(page.index).padStart(3, "0")}.${extension}`);
       await fs.writeFile(filename, body);
       context.signal.throwIfAborted();
       remainingTime(context);
       bytes += body.byteLength;
-      acquired.push({ index: page.index, path: filename, width: page.width, height: page.height });
+      let dimensions = { width: page.width, height: page.height };
+      let retainedSize = body.byteLength;
+      const retainedBudget = Math.min(IMAGE_LIMIT, TOTAL_IMAGE_LIMIT - retainedBytes);
+      if (extension === "avif") {
+        const png = path.join(directory, `page-${String(page.index).padStart(3, "0")}.png`);
+        const normalized = await normalizeAvif(filename, png, retainedBudget, context);
+        filename = png;
+        dimensions = { width: normalized.width, height: normalized.height };
+        retainedSize = normalized.bytes;
+      }
+      if (retainedSize > retainedBudget) throw new AcquisitionError("RESOURCE_LIMIT", "Normalized note images exceed the total byte limit.");
+      retainedBytes += retainedSize;
+      acquired.push({ index: page.index, path: filename, ...dimensions });
     }
     return { directory, pages: acquired, bytes, dispose: () => fs.rm(directory, { recursive: true, force: true, maxRetries: 3, retryDelay: 50 }) };
   } catch (error) {

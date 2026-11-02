@@ -84,6 +84,14 @@ B 站字幕状态为 `auth_required`：字幕 API 没有复用下载器已有的
 
 本轮 101 项离线测试全部通过，无跳过项；类型检查、构建及 diff 检查通过。测试覆盖 JSON 安全解析（不执行页面脚本）、两种页面状态、身份/类型核查、图片顺序与选页、流式字节限制、取消与清理、跨平台 OCR 路由、图片内联请求、缓存隔离和页号映射。无文字照片可用 `combined` 取得视觉证据，空 OCR 保留告警；文字模式缺页或看不清时保留部分结果。原有视频测试继续作为回归检查。
 
+## AVIF 图片兼容回归
+
+PR review 指出获取层主动接受 AVIF，而下游图片 Provider 只接受 JPEG/PNG/GIF/WebP，导致 AVIF 页面在视觉模式和 Windows/Linux 默认 Provider OCR 路径中失败。该问题有效；修复在获取层优先协商下游支持的格式，并在 CDN 仍返回 AVIF 时，用已有 FFmpeg 转为 PNG。
+
+新增回归使用本地生成并内嵌的 8×6 AVIF（312 字节），真实执行 FFmpeg 解码，验证 PNG 签名与尺寸、原始第 24 页身份、下载字节统计和临时文件清理，再通过模拟 Provider 检查视觉与 Linux 默认 OCR 请求实际收到 PNG。另验证损坏 AVIF 的安全失败，以及已取消/过期请求不会创建或下载转换输入。测试不访问平台或真实模型。
+
+本地 104 项离线测试全部通过，无跳过项；类型检查、生产构建及 diff 检查通过。转换产物和下载输入分别遵守单图 12 MiB、累计 128 MiB 预算，转换限制单帧和 4000 万解码像素；Provider 接口保持原有支持格式。
+
 ## 部署检查
 
 生产依赖安装已通过：环境不提供 `python` 别名，也没有 `tsx`，`npm ci --omit=dev` 仍可完成；可选的 `yt-dlp-exec` 缺失时，编译后的核心可以导入并返回无效 URL 的结构化错误。运行时获取仍需提供可执行的外部 yt-dlp/解释器及 FFmpeg。生产依赖环境中的编译版 stdio 服务启动成功，并发现 `analyze_video_url`、`analyze_bilibili_video`、`analyze_video`、`inspect_video_window` 四个工具。
