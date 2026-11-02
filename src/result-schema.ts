@@ -2,7 +2,7 @@ import { z } from "zod";
 
 const availability = z.enum(["available", "absent", "unsupported", "disabled", "not_requested", "error", "auth_required", "blocked", "unknown"]);
 const capability = z.object({ status: availability, reason: z.string().optional() });
-const platform = z.enum(["bilibili", "youtube"]);
+const platform = z.enum(["bilibili", "youtube", "xiaohongshu"]);
 const properties = z.record(z.string(), z.unknown());
 
 /** The discoverable MCP result contract; semantic verification is separate. */
