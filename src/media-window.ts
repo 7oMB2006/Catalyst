@@ -182,7 +182,11 @@ export async function acquireMediaWindow(video: VideoIdentity, request: Research
       throw new AcquisitionError("INVALID_MEDIA_WINDOW", "The downloader did not report finite source interval markers matching the requested window.");
     }
     const probe = await probeWindow(mediaPath, context);
-    if (Math.abs(probe.duration - expectedDuration) > Math.max(0.5, expectedDuration * 0.005)) {
+    const durationTolerance = Math.max(0.5, expectedDuration * 0.005);
+    if (probe.duration < expectedDuration - durationTolerance) {
+      throw new AcquisitionError("MEDIA_INCOMPLETE", `The acquired media is incomplete (${probe.duration.toFixed(3)} seconds actual; ${expectedDuration.toFixed(3)} seconds expected).`, true);
+    }
+    if (probe.duration > expectedDuration + durationTolerance) {
       throw new AcquisitionError("INVALID_MEDIA_WINDOW", "The downloaded duration does not match the requested source interval; no whole-source fallback was accepted.");
     }
     const advertised = advertisedSelectedStreams(available, metadata);

@@ -170,7 +170,7 @@ export async function researchLongVideo(request: LongVideoRequest, overrides: Pa
               try { return await deps.acquireWindow(source.video, { ...request, maxAcquiredBytes: result.plan!.max_download_bytes - downloaded, startSeconds: segment.window.start_seconds, endSeconds: segment.window.end_seconds, mediaDetail: segment.phase === "overview" ? "low" : "default" }, context); }
               catch (error) {
                 const value = error as { code?: string; retryable?: boolean };
-                if (attempt !== 0 || context.signal.aborted || !value?.retryable || !["TIMEOUT", "UPSTREAM_ERROR", "ACQUISITION_FAILED", "VIDEO_UNAVAILABLE", "AUDIO_UNAVAILABLE"].includes(value.code ?? "")) throw error;
+                if (attempt !== 0 || context.signal.aborted || !value?.retryable || !["TIMEOUT", "UPSTREAM_ERROR", "ACQUISITION_FAILED", "MEDIA_INCOMPLETE", "VIDEO_UNAVAILABLE", "AUDIO_UNAVAILABLE"].includes(value.code ?? "")) throw error;
                 result.warnings.push(`${segment.id}: temporary acquisition failure; refreshed source information and retried once within the same window deadline.`);
               }
             }
@@ -180,6 +180,7 @@ export async function researchLongVideo(request: LongVideoRequest, overrides: Pa
           if (downloaded > result.plan!.max_download_bytes) throw new LongVideoError("DOWNLOAD_BUDGET_EXCEEDED", "Acquired files exceeded the cumulative budget; this window was not analyzed.");
           result.capabilities.media = { status: "available" };
           if (request.mode !== "language" && !request.sourceQuality && (asset.height ?? 0) > (segment.phase === "overview" ? 480 : 720)) result.warnings.push(`${segment.id}: no source at the preferred resolution was available; acquired ${asset.height}p before bounded preparation.`);
+          if (asset.quality?.status === "degraded") result.warnings.push(`${segment.id}: ${asset.quality.degradationReason ?? "Acquired source quality is below the explicit request."}`);
           if (request.mode === "language") {
             segment.basis = "audio";
             const transcript = await run(`${segment.phase}_transcription`, () => deps.transcribe(asset!.path, context, request.language));

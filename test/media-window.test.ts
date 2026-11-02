@@ -172,7 +172,29 @@ test("terminal API rounding accepts the verified extractor end and reports actua
       // Requested markers without a clamp still cannot hide a nonterminal
       // truncation, even though the resulting media has a plausible duration.
       await assert.rejects(() => acquireMediaWindow({ ...video, durationSeconds: 3 }, terminalRequest, context()),
-        (error: unknown) => (error as { code: string }).code === "INVALID_MEDIA_WINDOW");
+        (error: unknown) => (error as { code: string }).code === "MEDIA_INCOMPLETE");
+    });
+  } finally { await fs.rm(f.directory, { recursive: true, force: true }); }
+});
+
+test("matching source markers distinguish retryable truncated media from a non-retryable oversized source interval", { timeout: 30_000 }, async () => {
+  const f = await fixture();
+  try {
+    await withEnv(f.env, async () => {
+      for (const [endSeconds, code, retryable] of [[126, "MEDIA_INCOMPLETE", true], [122, "INVALID_MEDIA_WINDOW", false]] as const) {
+        await trackDirectories(async (directories) => {
+          await assert.rejects(() => acquireMediaWindow(video, { ...request, endSeconds }, context()), (error: unknown) => {
+            assert.equal((error as { code: string }).code, code);
+            assert.equal((error as { retryable: boolean }).retryable, retryable);
+            if (retryable) {
+              assert.match((error as Error).message, /4\.000 seconds actual; 6\.000 seconds expected/);
+              assert.doesNotMatch((error as Error).message, /catalyst-window-fixture-|catalyst-media-window-/);
+            }
+            return true;
+          });
+          assert.equal(await fs.access(directories[0]).then(() => true, () => false), false);
+        });
+      }
     });
   } finally { await fs.rm(f.directory, { recursive: true, force: true }); }
 });

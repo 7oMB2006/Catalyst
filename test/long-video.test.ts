@@ -196,6 +196,28 @@ test("closer looks map clip-local focus proposals back to source time and remain
   assertAllDisposed(calls);
 });
 
+test("an explicit warn-on-unavailable quality request reaches every acquisition and retains actual source dimensions and degradation reasons", async () => {
+  const { deps, calls } = fixture(source(1200));
+  const sourceQuality: NonNullable<LongVideoRequest["sourceQuality"]> = { profile: "custom", resolution: "1080p", fps: 30, onUnavailable: "warn" };
+  const reason = "Requested 1080p at 30 fps; this source only offers 480p at 24 fps.";
+  const acquire = deps.acquireWindow;
+  deps.acquireWindow = async (...args) => ({
+    ...await acquire(...args), width: 854, height: 480, fps: 24,
+    quality: { status: "degraded", requestedResolution: "1080p", requestedFps: 30, onUnavailable: "warn", actualHeight: 480, actualFps: 24, formatId: "fixture-480p24", degradationReason: reason },
+  });
+  const result = await researchLongVideo({ ...REQUEST, sourceQuality, maxDetailWindows: 1 }, deps);
+  assert.equal(result.status, "complete"); assert.equal(calls.acquisitions.length, 3);
+  for (const request of calls.acquisitions) assert.deepEqual(request.sourceQuality, sourceQuality);
+  assert.equal(result.warnings.filter((warning) => warning.includes(reason)).length, 3);
+  const media = result.evidence.filter((evidence) => evidence.kind === "multimodal");
+  assert.equal(media.length, 3);
+  for (const evidence of media) {
+    assert.equal(evidence.data?.input_width, 854); assert.equal(evidence.data?.input_height, 480); assert.equal(evidence.data?.input_fps, 24);
+  }
+  assert.equal(result.coverage.overview_complete, true);
+  assertAllDisposed(calls);
+});
+
 test("one failed middle window preserves successful reports and explicitly leaves that interval unreviewed", async () => {
   const { deps, calls } = fixture(source(1800));
   const original = deps.analyzeMedia;
@@ -333,6 +355,23 @@ test("an otherwise temporary acquisition failure is not retried without its expl
   assert.equal(attempts, 1); assert.equal(result.status, "unavailable");
   assert.equal(result.errors[0].code, "UPSTREAM_ERROR");
   assert.ok(!result.warnings.some((warning) => /retried once/.test(warning)));
+});
+
+test("a verified but truncated source window is reacquired once before being interpreted", async () => {
+  const { deps, calls } = fixture(source(600));
+  const original = deps.acquireWindow;
+  let attempts = 0;
+  deps.acquireWindow = async (...args) => {
+    if (++attempts === 1) throw Object.assign(new Error("Acquired media is 4 seconds, expected 6 seconds."), { code: "MEDIA_INCOMPLETE", retryable: true });
+    return original(...args);
+  };
+  const result = await researchLongVideo(REQUEST, deps);
+  assert.equal(attempts, 2);
+  assert.equal(result.status, "complete");
+  assert.equal(calls.media.length, 1, "the truncated attempt must never reach model analysis");
+  assert.ok(result.warnings.some((warning) => /retried once/.test(warning)));
+  assert.deepEqual(result.coverage.unreviewed, []);
+  assertAllDisposed(calls);
 });
 
 for (const reason of ["AbortError", "TimeoutError"] as const) {
