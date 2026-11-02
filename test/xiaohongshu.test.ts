@@ -121,15 +121,17 @@ test("copied Xiaohongshu share text routes one URL and upgrades insecure short l
     for (const input of [
       "http://xhslink.cn/o/fixture",
       "51 分享了一篇视频笔记 http://xhslink.com/a/fixture，复制本条信息，打开小红书查看！",
+      "https://xhslink.cn/o/fixture，复制本条信息，打开小红书查看！",
       `分享给你（${NOTE_URL}），看看这个视频`,
     ]) {
       assert.equal(getAdapter(input).platform, "xiaohongshu");
       assert.equal((await resolveXiaohongshuUrl(input, context())).id, NOTE_ID);
     }
-    assert.deepEqual(calls, ["https://xhslink.cn/o/fixture", "https://xhslink.com/a/fixture"]);
+    assert.deepEqual(calls, ["https://xhslink.cn/o/fixture", "https://xhslink.com/a/fixture", "https://xhslink.cn/o/fixture"]);
     for (const input of [
       `视频 ${NOTE_URL} 另一个 https://xhslink.cn/o/other`,
       `https://xhslink.cn/o/one https://xhslink.cn/o/two`,
+      "https://xhslink.cn/o/one，另一个：https://xhslink.cn/o/two",
       "视频 https://evil.invalid/note", "没有链接的分享文案",
     ]) assert.throws(() => parseSourceUrl(input), code("INVALID_URL"));
   } finally { globalThis.fetch = original; }

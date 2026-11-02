@@ -141,7 +141,13 @@ test("Xiaohongshu share text reaches all three shared modes with private acquisi
             }) } }] });
           }) as typeof fetch;
           const result = researchResultSchema.parse(await researchVideo({ ...request, mode }));
-          assert.equal(result.status, "complete", JSON.stringify(result.errors));
+          const downloads = (await fs.readFile(fake.log, "utf8")).trim().split("\n").filter(Boolean).map((line) => JSON.parse(line) as { args: string[]; output?: string });
+          assert.equal(result.status, "complete", JSON.stringify({
+            errors: result.errors,
+            downloader_calls: downloads.length,
+            download_completed: downloads.some((download) => download.output),
+            completed_stages: Object.keys(result.processing.stage_durations_ms),
+          }));
           assert.deepEqual(result.errors, []);
           assert.equal(result.video?.platform, "xiaohongshu");
           assert.equal(result.video?.canonicalUrl, PUBLIC_URL);
@@ -161,7 +167,6 @@ test("Xiaohongshu share text reaches all three shared modes with private acquisi
           assert.deepEqual(result.findings[0].evidence_ids, [evidenceId]);
           assert.doesNotMatch(JSON.stringify(result), /fixture-share-token|fixture-private|xsec_token|xsec_source|cdn\.invalid/);
           assert.equal(calls.length, mode === "language" ? 2 : 1);
-          const downloads = (await fs.readFile(fake.log, "utf8")).trim().split("\n").map((line) => JSON.parse(line) as { args: string[]; output?: string });
           assert.equal(downloads.length, 3, "resolve, acquire probe and download all use the same source");
           for (const download of downloads) {
             assert.equal(download.args.at(-1), ACQUISITION_URL, "share parameters reach every acquisition call");

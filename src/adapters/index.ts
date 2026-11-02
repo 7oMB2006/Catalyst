@@ -9,7 +9,9 @@ export { BilibiliAdapter, YouTubeAdapter, XiaohongshuAdapter };
 export function parseSourceUrl(input: string): URL {
   let url: URL;
   const trimmed = input.trim();
-  const source = /\s/.test(trimmed) || !/^https?:\/\//i.test(trimmed) ? extractXiaohongshuShareUrl(trimmed) : trimmed;
+  let isXiaohongshu = false;
+  try { isXiaohongshu = new XiaohongshuAdapter().supports(new URL(trimmed)); } catch { /* Share text need not itself be a URL. */ }
+  const source = isXiaohongshu || /\s/.test(trimmed) || !/^https?:\/\//i.test(trimmed) ? extractXiaohongshuShareUrl(trimmed) : trimmed;
   if (!source) throw new AcquisitionError("INVALID_URL", "A valid public video URL or Xiaohongshu share text containing one supported URL is required.");
   try { url = new URL(source); } catch { throw new AcquisitionError("INVALID_URL", "A valid public video URL or Xiaohongshu share text containing one supported URL is required."); }
   if (!["http:", "https:"].includes(url.protocol) || url.username || url.password || (url.port && !["80", "443"].includes(url.port))) {

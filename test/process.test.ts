@@ -15,7 +15,7 @@ async function treeFixture(overflow = false) {
   const ready = path.join(directory, "child-ready");
   const marker = path.join(directory, "orphan-marker");
   const parent = path.join(directory, "parent.cjs");
-  const childScript = `const fs=require('node:fs');process.on('SIGTERM',()=>{});fs.writeFileSync(${JSON.stringify(ready)},String(process.pid));setTimeout(()=>fs.writeFileSync(${JSON.stringify(marker)},'orphan survived'),1600);setInterval(()=>{},1000);`;
+  const childScript = `const fs=require('node:fs');process.on('SIGTERM',()=>{});fs.writeFileSync(${JSON.stringify(ready)},String(process.pid));setTimeout(()=>fs.writeFileSync(${JSON.stringify(marker)},'orphan survived'),1600);setInterval(()=>{if(!fs.existsSync(${JSON.stringify(directory)}))process.exit(0);},20);`;
   await fs.writeFile(parent, `const fs=require('node:fs');const cp=require('node:child_process');cp.spawn(process.execPath,['-e',${JSON.stringify(childScript)}],{stdio:'ignore'});${overflow ? `const check=setInterval(()=>{if(fs.existsSync(${JSON.stringify(ready)})){clearInterval(check);process.stdout.write('x'.repeat(100000));}},10);` : ""}setInterval(()=>{},1000);`);
   return {
     directory, ready, marker, parent,
@@ -25,8 +25,8 @@ async function treeFixture(overflow = false) {
       assert.equal(await exists(ready), true, "fake downloader must spawn its child before cancellation");
     },
     cleanup: async () => {
-      const pid = Number(await fs.readFile(ready, "utf8").catch(() => "0"));
-      if (pid > 0) { try { process.kill(pid, "SIGKILL"); } catch { /* already terminated */ } }
+      // Surviving fixture children exit when their directory disappears. A PID
+      // recorded before teardown may already belong to an unrelated process.
       await fs.rm(directory, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
     },
   };

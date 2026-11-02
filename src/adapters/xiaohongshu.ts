@@ -33,8 +33,7 @@ export function extractXiaohongshuShareUrl(input: string): string | undefined {
 /** Retain acquisition parameters internally; ResearchResult renders a public URL separately. */
 export async function resolveXiaohongshuUrl(input: string, context: ExecutionContext): Promise<{ id: string; canonicalUrl: string }> {
   let url: URL;
-  const trimmed = input.trim();
-  const source = /\s/.test(trimmed) || !/^https?:\/\//i.test(trimmed) ? extractXiaohongshuShareUrl(trimmed) : trimmed;
+  const source = extractXiaohongshuShareUrl(input.trim());
   if (!source) throw new AcquisitionError("INVALID_URL", "Provide one Xiaohongshu note/share URL; share text with multiple links is ambiguous.");
   try { url = upgradeShareUrl(new URL(source)); }
   catch { throw new AcquisitionError("INVALID_URL", "A valid Xiaohongshu video-note or share URL is required."); }
