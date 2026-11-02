@@ -1,14 +1,12 @@
 import { promises as fs } from "node:fs";
-import { createRequire } from "node:module";
 import path from "node:path";
-import { promisify } from "node:util";
-import { execFile as execFileCallback } from "node:child_process";
 import { analyzeMediaWithProvider, analyzeTextWithProvider, createAudioTrack, createVideoWindow, createSilentVideo, createSilentWindow, getConfiguredVideoProvider, getFfmpegPath, removeTemporaryWindow, type MediaDetail } from "./video-analysis.js";
 import { assessDownloadedQuality, parseYtDlpMetadata, resolveSourceQuality, selectYtDlpFormat, type ResolvedSourceQuality, type SourceQualityReport, type SourceQualityRequest } from "./media-quality.js";
+import { inspectDownloader } from "./acquisition.js";
+import { runProcess as execFile } from "./process.js";
+import type { Captions } from "./contracts.js";
 
-const execFile = promisify(execFileCallback);
-const require = createRequire(import.meta.url);
-const ytDlpPath = path.resolve(path.dirname(require.resolve("yt-dlp-exec")), "..", "bin", process.platform === "win32" ? "yt-dlp.exe" : "yt-dlp");
+
 const MAX_COMMENT_POOL = 20;
 const LONG_VIDEO_THRESHOLD_SECONDS = Number(process.env.BILIBILI_LONG_VIDEO_THRESHOLD_SECONDS ?? 900);
 const WINDOW_SECONDS = Number(process.env.BILIBILI_WINDOW_SECONDS ?? 180);
@@ -121,8 +119,8 @@ function apiError(endpoint: string, payload: unknown): Error {
   return new Error(`Bilibili ${endpoint} request failed (${value.code ?? "unknown"}): ${value.message ?? "unknown error"}`);
 }
 
-async function fetchJson<T>(url: string): Promise<T> {
-  const response = await fetch(url, { headers: { "User-Agent": "bilibili-video-research-mcp/0.1" } });
+async function fetchJson<T>(url: string, signal?: AbortSignal): Promise<T> {
+  const response = await fetch(url, { signal, headers: { "User-Agent": "bilibili-video-research-mcp/0.1" } });
   if (!response.ok) throw new Error(`Bilibili request failed with HTTP ${response.status}.`);
   return response.json() as Promise<T>;
 }
@@ -136,37 +134,40 @@ export async function resolveBvid(url: string): Promise<string> {
   return bvid;
 }
 
-async function getVideo(bvid: string): Promise<BilibiliVideo> {
-  const payload = await fetchJson<{ code: number; message: string; data?: Record<string, unknown> }>(`https://api.bilibili.com/x/web-interface/view?bvid=${encodeURIComponent(bvid)}`);
+export async function getVideo(bvid: string, page = 1, signal?: AbortSignal): Promise<BilibiliVideo> {
+  const payload = await fetchJson<{ code: number; message: string; data?: Record<string, unknown> }>(`https://api.bilibili.com/x/web-interface/view?bvid=${encodeURIComponent(bvid)}`, signal);
   if (payload.code !== 0 || !payload.data) throw apiError("video metadata", payload);
   const data = payload.data;
-  const pages = data.pages as Array<{ cid?: number }> | undefined;
+  const pages = data.pages as Array<{ cid?: number; duration?: number; part?: string }> | undefined;
+  if (!Number.isInteger(page) || page < 1 || (pages?.length ? page > pages.length : page !== 1)) throw new Error("The requested Bilibili part does not exist.");
+  const selectedPart = pages?.[page - 1];
   return {
     bvid,
     aid: Number(data.aid),
-    cid: Number(data.cid ?? pages?.[0]?.cid),
+    cid: Number(selectedPart?.cid ?? data.cid),
     title: String(data.title ?? ""),
     description: String(data.desc ?? ""),
     owner: { name: String((data.owner as Record<string, unknown> | undefined)?.name ?? ""), mid: Number((data.owner as Record<string, unknown> | undefined)?.mid) },
     publishedAt: Number(data.pubdate),
     category: String(data.tname ?? ""),
     stats: (data.stat as Record<string, number> | undefined) ?? {},
-    durationSeconds: Number(data.duration ?? 0),
+    durationSeconds: Number(selectedPart?.duration ?? data.duration ?? 0),
   };
 }
 
-async function getArchiveTags(bvid: string): Promise<TagContext> {
+export async function getArchiveTags(bvid: string, signal?: AbortSignal): Promise<TagContext> {
   try {
     const payload = await fetchJson<{
       code: number;
       data?: Array<{ tag_name?: string }>;
-    }>(`https://api.bilibili.com/x/tag/archive/tags?bvid=${encodeURIComponent(bvid)}`);
+    }>(`https://api.bilibili.com/x/tag/archive/tags?bvid=${encodeURIComponent(bvid)}`, signal);
     if (payload.code !== 0) return { status: "fetch_failed", tags: [] };
     const tags = [...new Set((payload.data ?? [])
       .map((item) => item.tag_name?.trim() ?? "")
       .filter(Boolean))];
     return { status: tags.length ? "present" : "empty", tags };
   } catch {
+    signal?.throwIfAborted();
     return { status: "fetch_failed", tags: [] };
   }
 }
@@ -221,7 +222,7 @@ function asCommentList(value: Comment | Comment[] | null | undefined): Comment[]
   return Array.isArray(value) ? value : [value];
 }
 
-async function getComments(aid: number): Promise<CommunityContext> {
+export async function getComments(aid: number, signal?: AbortSignal): Promise<CommunityContext> {
   try {
     const payload = await fetchJson<{
       code: number;
@@ -231,7 +232,7 @@ async function getComments(aid: number): Promise<CommunityContext> {
         top_replies?: Comment[];
         upper?: { top?: Comment | null };
       };
-    }>(`https://api.bilibili.com/x/v2/reply?type=1&oid=${aid}&sort=1&ps=${MAX_COMMENT_POOL}&pn=1`);
+    }>(`https://api.bilibili.com/x/v2/reply?type=1&oid=${aid}&sort=1&ps=${MAX_COMMENT_POOL}&pn=1`, signal);
     if (payload.code !== 0) return { status: "fetch_failed", sampled: [], displayed: [] };
     const sampled = (payload.data?.replies ?? []).slice(0, MAX_COMMENT_POOL).sort((left, right) => (right.like ?? 0) - (left.like ?? 0));
     const pinned = [
@@ -242,22 +243,39 @@ async function getComments(aid: number): Promise<CommunityContext> {
     const displayed = selectRepresentativeComments(sampled, pinned);
     return { status: displayed.length ? "present" : "empty", sampled, displayed };
   } catch {
+    signal?.throwIfAborted();
     return { status: "fetch_failed", sampled: [], displayed: [] };
+  }
+}
+
+export async function getCaptionTrack(video: BilibiliVideo, language?: string, signal?: AbortSignal): Promise<Captions> {
+  try {
+    const payload = await fetchJson<{ code: number; message?: string; data?: { need_login_subtitle?: boolean; subtitle?: { subtitles?: Array<{ subtitle_url?: string; lan?: string; ai_status?: number }> } } }>(`https://api.bilibili.com/x/player/v2?aid=${video.aid}&cid=${video.cid}`, signal);
+    if (payload.data?.need_login_subtitle || payload.code === -101) return { status: "auth_required", kind: "unknown", cues: [], reason: "Platform subtitles require an authorized Bilibili session." };
+    if (payload.code !== 0) return { status: "error", kind: "unknown", cues: [], reason: "The Bilibili subtitle API returned an error." };
+    const tracks = payload.data?.subtitle?.subtitles ?? [];
+    const track = language ? tracks.find((item) => item.lan === language || item.lan === `ai-${language}` || item.lan?.startsWith(`${language}-`)) : tracks[0];
+    const subtitleUrl = track?.subtitle_url;
+    if (!subtitleUrl) return { status: "absent", kind: "unknown", cues: [], reason: language ? "No subtitle track matches the requested language." : "No platform subtitle track is available." };
+    const resolved = new URL(subtitleUrl.startsWith("//") ? `https:${subtitleUrl}` : subtitleUrl);
+    if (resolved.protocol !== "https:" || resolved.username || resolved.password) throw new Error("The platform returned an invalid subtitle URL.");
+    const subtitle = await fetchJson<{ body?: Array<{ from?: number; to?: number; content?: string }> }>(resolved.toString(), signal);
+    const cues = (subtitle.body ?? []).map((item) => ({
+      start: Number(item.from),
+      end: Number(item.to),
+      content: item.content?.trim() ?? "",
+    })).filter((cue) => cue.content && Number.isFinite(cue.start) && Number.isFinite(cue.end) && cue.start >= 0 && cue.end > cue.start);
+    return { status: cues.length ? "available" : "absent", kind: track?.lan?.startsWith("ai-") || track?.ai_status ? "automatic" : "unknown", language: track?.lan?.replace(/^ai-/, ""), cues };
+  } catch {
+    signal?.throwIfAborted();
+    return { status: "error", kind: "unknown", cues: [], reason: "Bilibili subtitles could not be retrieved." };
   }
 }
 
 async function getCaptionText(video: BilibiliVideo, startSeconds?: number, endSeconds?: number): Promise<{ text: string; hasTimestamps: boolean } | undefined> {
   try {
-    const payload = await fetchJson<{ code: number; data?: { subtitle?: { subtitles?: Array<{ subtitle_url?: string }> } } }>(`https://api.bilibili.com/x/player/v2?aid=${video.aid}&cid=${video.cid}`);
-    const subtitleUrl = payload.data?.subtitle?.subtitles?.[0]?.subtitle_url;
-    if (!subtitleUrl) return undefined;
-    const subtitle = await fetchJson<{ body?: Array<{ from?: number; to?: number; content?: string }> }>(subtitleUrl.startsWith("//") ? `https:${subtitleUrl}` : subtitleUrl);
-    const cues = (subtitle.body ?? []).map((item) => ({
-      start: Number(item.from),
-      end: Number(item.to),
-      content: item.content?.trim() ?? "",
-    })).filter((cue) => cue.content);
-    const selectedCues = selectCaptionCues(cues, startSeconds, endSeconds);
+    const captions = await getCaptionTrack(video);
+    const selectedCues = selectCaptionCues(captions.cues, startSeconds, endSeconds);
     const text = selectedCues.map((cue) => Number.isFinite(cue.start) && Number.isFinite(cue.end)
       ? `[${formatTimestamp(cue.start)}-${formatTimestamp(cue.end)}] ${cue.content}`
       : cue.content).join("\n");
@@ -470,7 +488,9 @@ async function ytDlpCredentialArgs(): Promise<string[]> {
 }
 
 async function probeVideoFormats(url: string, credentialArgs: string[]): Promise<ReturnType<typeof parseYtDlpMetadata>> {
-  const { stdout } = await execFile(ytDlpPath, [
+  const runtime = inspectDownloader();
+  const { stdout } = await execFile(runtime.command, [
+    ...runtime.prefixArgs,
     "--no-playlist", "--no-warnings", "--restrict-filenames", "--no-continue",
     "--skip-download", "--dump-single-json",
     ...credentialArgs,
@@ -488,7 +508,9 @@ async function downloadVideo(url: string, directory: string, quality: ResolvedSo
   for (let attempt = 1; attempt <= 2; attempt += 1) {
     const prefix = `source-${attempt}`;
     try {
-      const { stdout } = await execFile(ytDlpPath, [
+      const runtime = inspectDownloader();
+      const { stdout } = await execFile(runtime.command, [
+        ...runtime.prefixArgs,
         "--no-playlist", "--no-warnings", "--restrict-filenames", "--no-continue",
         "--ffmpeg-location", getFfmpegPath(),
         ...credentialArgs,

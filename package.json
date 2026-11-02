@@ -1,12 +1,15 @@
 {
-  "name": "bilibili-video-research-mcp",
-  "version": "0.1.0",
+  "name": "catalyst-video-research-mcp",
+  "version": "0.1.0-preview.1",
   "private": true,
   "type": "module",
-  "description": "Evidence-aware Bilibili video research MCP for language, vision, and multimodal analysis.",
+  "description": "Cross-platform video research MCP with explicit evidence sources and time precision.",
   "scripts": {
-    "build": "tsc -p tsconfig.json",
-    "start": "tsx src/index.ts",
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc -p tsconfig.json",
+    "start": "node dist/index.js",
+    "dev": "tsx src/index.ts",
+    "doctor": "node dist/doctor.js",
     "test": "tsx --test test/*.test.ts"
   },
   "engines": {
@@ -14,15 +17,31 @@
   },
   "dependencies": {
     "@google/genai": "^2.13.0",
-    "@modelcontextprotocol/sdk": "^1.29.0",
+    "@modelcontextprotocol/sdk": "^1.32.2",
     "dotenv": "^17.3.1",
     "ffmpeg-static": "^5.3.0",
-    "yt-dlp-exec": "^1.0.2",
-    "zod": "^4.3.6"
+    "zod": "^4.6.7"
   },
   "devDependencies": {
     "@types/node": "^25.6.0",
     "tsx": "^4.21.0",
     "typescript": "^6.0.3"
+  },
+  "bin": {
+    "catalyst-mcp": "dist/index.js"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "README.zh-CN.md",
+    "LICENSE",
+    ".env.example"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/7oMB2006/Catalyst.git"
+  },
+  "optionalDependencies": {
+    "yt-dlp-exec": "^1.0.2"
   }
 }

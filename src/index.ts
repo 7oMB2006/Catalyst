@@ -1,11 +1,14 @@
+#!/usr/bin/env node
 import "dotenv/config";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
 import { createSilentVideo, analyzeWithProvider, createSilentWindow, removeTemporaryWindow } from "./video-analysis.js";
 import { researchBilibiliVideo } from "./bilibili.js";
+import { researchVideo } from "./research.js";
+import { researchResultShape } from "./result-schema.js";
 
-const server = new McpServer({ name: "bilibili-video-research-mcp", version: "0.1.0" });
+const server = new McpServer({ name: "catalyst-video-research-mcp", version: "0.1.0-preview.1" });
 
 function result(text: string) {
   return { content: [{ type: "text" as const, text }] };
@@ -29,7 +32,7 @@ const sourceQualitySchema = z.object({
   resolution: z.enum(["720p", "1080p", "1440p", "2160p"]).optional().describe("Target source-video resolution. Overrides the profile preset."),
   fps: z.union([z.literal(30), z.literal(60)]).optional().describe("Target source-video frame rate. Overrides the profile preset."),
   on_unavailable: z.enum(["error", "warn"]).default("error").describe("error refuses an unavailable target instead of silently downgrading; warn allows a reported fallback."),
-}).optional().describe("Optional source acquisition quality. It affects Bilibili downloads, not local-video tools.");
+}).optional().describe("Optional source acquisition quality. It affects platform downloads, not local-video tools.");
 
 server.registerTool("analyze_video", {
   title: "Analyze a Video Visually",
@@ -119,6 +122,39 @@ server.registerTool("analyze_bilibili_video", {
   } catch (error) {
     return failed(error);
   }
+});
+
+server.registerTool("analyze_video_url", {
+  title: "Research a Video with Catalyst",
+  description: "Research a public Bilibili or YouTube video using a shared language, vision or multimodal workflow. Returns structured evidence, capability states, source-time precision and explicitly unverified model findings. Source quality follows the available source unless explicitly requested. Comments are opt-in.",
+  inputSchema: {
+    url: z.string().url(),
+    question: z.string().min(3),
+    mode: z.enum(["language", "vision", "multimodal"]),
+    media_detail: z.enum(["low", "default"]).default("default"),
+    include_comments: z.boolean().default(false),
+    language: z.string().min(2).max(20).optional().describe("Preferred caption and ASR language, for example en or zh."),
+    source_quality: sourceQualitySchema,
+    start_seconds: z.number().min(0).optional().describe("Source-video interval start. Provide together with end_seconds; URL timestamp parameters do not set the research window."),
+    end_seconds: z.number().positive().optional().describe("Source-video interval end, after start_seconds and within the source duration. Media windows are limited to 900 seconds."),
+    timeout_seconds: z.number().min(5).max(600).default(240).describe("Overall research deadline in seconds, including acquisition and model calls."),
+  },
+  outputSchema: researchResultShape,
+  annotations: { readOnlyHint: true },
+}, async ({ url, question, mode, media_detail, include_comments, language, source_quality, start_seconds, end_seconds, timeout_seconds }, extra) => {
+  const research = await researchVideo({
+    url, question, mode, mediaDetail: media_detail, includeComments: include_comments,
+    language, startSeconds: start_seconds, endSeconds: end_seconds, timeoutSeconds: timeout_seconds,
+    sourceQuality: source_quality ? {
+      profile: source_quality.profile, resolution: source_quality.resolution,
+      fps: source_quality.fps, onUnavailable: source_quality.on_unavailable,
+    } : undefined,
+  }, undefined, extra.signal);
+  return {
+    content: [{ type: "text" as const, text: JSON.stringify(research, null, 2) }],
+    structuredContent: { ...research },
+    isError: research.status === "unavailable",
+  };
 });
 
 await server.connect(new StdioServerTransport());

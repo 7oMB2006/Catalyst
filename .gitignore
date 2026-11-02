@@ -1,4 +1,11 @@
 node_modules/
-.env
 dist/
+.env
 *.log
+__pycache__/
+*.cookies.txt
+
+# Local investigation artifacts are summarized in docs/validation.md.
+research/
+scripts/probe_platforms.py
+scripts/youtube_smoke.py

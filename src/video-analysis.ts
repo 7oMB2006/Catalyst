@@ -1,3 +1,5 @@
+import type { ExecutionContext } from "./contracts.js";
+import { setTimeout as delay } from "node:timers/promises";
 import { createPartFromUri, FileState, GoogleGenAI, PartMediaResolutionLevel } from "@google/genai";
 import { promises as fs } from "node:fs";
 import { createRequire } from "node:module";
@@ -15,6 +17,30 @@ const SUPPORTED_MEDIA_EXTENSIONS = new Set([...SUPPORTED_VIDEO_EXTENSIONS, ".m4a
 
 export type MediaDetail = "low" | "default";
 export type VideoProvider = "gemini" | "stepfun";
+
+export interface ProviderOptions { context?: ExecutionContext; language?: string }
+
+export function redactSensitiveText(value: string): string {
+  let safe = value;
+  for (const [key, secret] of Object.entries(process.env)) {
+    if (/(?:KEY|TOKEN|SECRET|PASSWORD|COOKIE)/i.test(key) && secret && secret.length > 5) safe = safe.split(secret).join("[redacted]");
+  }
+  return safe.replace(/https?:\/\/[^\s<>"']+/g, (text) => {
+    try { const url = new URL(text); url.username = ""; url.password = ""; if (url.search) url.search = "?[query-redacted]"; url.hash = ""; return url.toString(); } catch { return "[url-redacted]"; }
+  });
+}
+
+function remaining(context?: ExecutionContext): number | undefined {
+  context?.signal.throwIfAborted();
+  if (!context) return undefined;
+  const milliseconds = context.deadlineMs - Date.now();
+  if (milliseconds <= 0) throw new DOMException("Research deadline exceeded.", "TimeoutError");
+  return milliseconds;
+}
+
+async function runFfmpeg(args: string[], context?: ExecutionContext): Promise<void> {
+  await execFile(getFfmpegPath(), args, { signal: context?.signal, timeout: remaining(context), maxBuffer: 4 * 1024 * 1024 });
+}
 
 export interface AnalysisRequest {
   videoPath: string;
@@ -75,17 +101,18 @@ async function assertReadableMedia(videoPath: string): Promise<void> {
   }
 }
 
-async function waitForFile(ai: GoogleGenAI, name: string): Promise<{ uri: string; mimeType: string }> {
-  const deadline = Date.now() + PROCESSING_TIMEOUT_MS;
+async function waitForFile(ai: GoogleGenAI, name: string, context?: ExecutionContext): Promise<{ uri: string; mimeType: string }> {
+  const deadline = Math.min(Date.now() + PROCESSING_TIMEOUT_MS, context?.deadlineMs ?? Infinity);
   while (Date.now() < deadline) {
-    const current = await ai.files.get({ name });
+    remaining(context);
+    const current = await ai.files.get({ name, config: { abortSignal: context?.signal } });
     if (current.state === FileState.ACTIVE && current.uri && current.mimeType) {
       return { uri: current.uri, mimeType: current.mimeType };
     }
     if (current.state === FileState.FAILED) {
       throw new Error(`Gemini could not process the video: ${current.error?.message ?? "unknown processing error"}`);
     }
-    await new Promise((resolve) => setTimeout(resolve, 2_000));
+    await delay(Math.min(2_000, Math.max(1, deadline - Date.now())), undefined, { signal: context?.signal });
   }
   throw new Error("Timed out while Gemini processed the video.");
 }
@@ -98,7 +125,7 @@ export function getFfmpegPath(): string {
   return executable;
 }
 
-async function createWindow(videoPath: string, startSeconds: number, endSeconds: number, includeAudio: boolean): Promise<{ directory: string; clipPath: string }> {
+async function createWindow(videoPath: string, startSeconds: number, endSeconds: number, includeAudio: boolean, context?: ExecutionContext): Promise<{ directory: string; clipPath: string }> {
   if (!Number.isFinite(startSeconds) || !Number.isFinite(endSeconds) || startSeconds < 0 || endSeconds <= startSeconds) {
     throw new Error("start_seconds must be >= 0 and end_seconds must be greater than start_seconds.");
   }
@@ -116,7 +143,7 @@ async function createWindow(videoPath: string, startSeconds: number, endSeconds:
       "-movflags", "+faststart",
       clipPath,
     ];
-    await execFile(getFfmpegPath(), args);
+    await runFfmpeg(args, context);
     return { directory, clipPath };
   } catch (error) {
     await fs.rm(directory, { recursive: true, force: true });
@@ -124,22 +151,22 @@ async function createWindow(videoPath: string, startSeconds: number, endSeconds:
   }
 }
 
-export async function createSilentWindow(videoPath: string, startSeconds: number, endSeconds: number): Promise<{ directory: string; clipPath: string }> {
-  return createWindow(videoPath, startSeconds, endSeconds, false);
+export async function createSilentWindow(videoPath: string, startSeconds: number, endSeconds: number, context?: ExecutionContext): Promise<{ directory: string; clipPath: string }> {
+  return createWindow(videoPath, startSeconds, endSeconds, false, context);
 }
 
-export async function createVideoWindow(videoPath: string, startSeconds: number, endSeconds: number): Promise<{ directory: string; clipPath: string }> {
-  return createWindow(videoPath, startSeconds, endSeconds, true);
+export async function createVideoWindow(videoPath: string, startSeconds: number, endSeconds: number, context?: ExecutionContext): Promise<{ directory: string; clipPath: string }> {
+  return createWindow(videoPath, startSeconds, endSeconds, true, context);
 }
 
-export async function createSilentVideo(videoPath: string): Promise<{ directory: string; videoPath: string }> {
+export async function createSilentVideo(videoPath: string, context?: ExecutionContext): Promise<{ directory: string; videoPath: string }> {
   const directory = await fs.mkdtemp(path.join(tmpdir(), "bilibili-video-research-mcp-"));
   const silentPath = path.join(directory, "silent.mp4");
   try {
-    await execFile(getFfmpegPath(), [
+    await runFfmpeg([
       "-hide_banner", "-loglevel", "error", "-y", "-i", videoPath,
       "-map", "0:v:0?", "-an", "-c:v", "libx264", "-movflags", "+faststart", silentPath,
-    ]);
+    ], context);
     return { directory, videoPath: silentPath };
   } catch (error) {
     await fs.rm(directory, { recursive: true, force: true });
@@ -147,14 +174,19 @@ export async function createSilentVideo(videoPath: string): Promise<{ directory:
   }
 }
 
-export async function createAudioTrack(videoPath: string): Promise<{ directory: string; audioPath: string }> {
+export async function createAudioTrack(videoPath: string, context?: ExecutionContext, window?: { startSeconds: number; endSeconds: number }): Promise<{ directory: string; audioPath: string }> {
+  if (window && (!Number.isFinite(window.startSeconds) || !Number.isFinite(window.endSeconds) || window.startSeconds < 0 || window.endSeconds <= window.startSeconds)) {
+    throw new Error("Audio window must have a finite nonnegative start and an end after its start.");
+  }
   const directory = await fs.mkdtemp(path.join(tmpdir(), "bilibili-video-research-mcp-"));
   const audioPath = path.join(directory, "audio.wav");
   try {
-    await execFile(getFfmpegPath(), [
-      "-hide_banner", "-loglevel", "error", "-y", "-i", videoPath,
+    await runFfmpeg([
+      "-hide_banner", "-loglevel", "error", "-y",
+      ...(window ? ["-ss", String(window.startSeconds)] : []), "-i", videoPath,
+      ...(window ? ["-t", String(window.endSeconds - window.startSeconds)] : []),
       "-vn", "-ac", "1", "-ar", "16000", "-c:a", "pcm_s16le", audioPath,
-    ]);
+    ], context);
     return { directory, audioPath };
   } catch (error) {
     await fs.rm(directory, { recursive: true, force: true });
@@ -162,10 +194,11 @@ export async function createAudioTrack(videoPath: string): Promise<{ directory: 
   }
 }
 
-export async function analyzeMediaWithProvider(mediaPath: string, prompt: string, mediaDetail: MediaDetail = "default"): Promise<string> {
+export async function analyzeMediaWithProvider(mediaPath: string, prompt: string, mediaDetail: MediaDetail = "default", options: ProviderOptions = {}): Promise<string> {
+  remaining(options.context);
   await assertReadableMedia(mediaPath);
   const provider = selectedProvider();
-  if (provider === "stepfun") return analyzeMediaWithStepfun(mediaPath, prompt, mediaDetail);
+  if (provider === "stepfun") return analyzeMediaWithStepfun(mediaPath, prompt, mediaDetail, options);
 
   const apiKey = process.env.GEMINI_API_KEY;
   if (!apiKey) {
@@ -175,16 +208,17 @@ export async function analyzeMediaWithProvider(mediaPath: string, prompt: string
   const ai = new GoogleGenAI({ apiKey });
   const uploaded = await ai.files.upload({
     file: mediaPath,
-    config: { displayName: path.basename(mediaPath) },
+    config: { displayName: path.basename(mediaPath), abortSignal: options.context?.signal },
   });
   if (!uploaded.name) {
     throw new Error("Gemini did not return a file name after upload.");
   }
 
   try {
-    const file = await waitForFile(ai, uploaded.name);
+    const file = await waitForFile(ai, uploaded.name, options.context);
     const response = await ai.models.generateContent({
       model: process.env.GEMINI_VIDEO_MODEL ?? "gemini-2.5-flash",
+      config: { abortSignal: options.context?.signal },
       contents: [{
         role: "user",
         parts: [
@@ -198,7 +232,7 @@ export async function analyzeMediaWithProvider(mediaPath: string, prompt: string
     }
     return response.text;
   } finally {
-    await ai.files.delete({ name: uploaded.name }).catch(() => undefined);
+    await ai.files.delete({ name: uploaded.name, config: { abortSignal: AbortSignal.timeout(5_000) } }).catch(() => undefined);
   }
 }
 
@@ -208,16 +242,18 @@ function stepfunBaseUrl(): string {
   return "https://api.stepfun.com/v1";
 }
 
-async function stepfunRequest(pathname: string, init: RequestInit): Promise<Response> {
+async function stepfunRequest(pathname: string, init: RequestInit, context?: ExecutionContext): Promise<Response> {
   const apiKey = process.env.STEPFUN_API_KEY;
   if (!apiKey) throw new Error("STEPFUN_API_KEY is not configured for bilibili-video-research-mcp.");
+  remaining(context);
   const response = await fetch(`${stepfunBaseUrl()}${pathname}`, {
     ...init,
+    signal: context?.signal ?? init.signal,
     headers: { Authorization: `Bearer ${apiKey}`, ...(init.headers ?? {}) },
   });
   if (!response.ok) {
     const body = await response.text();
-    throw new Error(`StepFun API request failed (${response.status}): ${body.slice(0, 500)}`);
+    throw new Error(`StepFun API request failed (${response.status}): ${redactSensitiveText(body).slice(0, 500)}`);
   }
   return response;
 }
@@ -228,11 +264,11 @@ function stepfunDetailInstruction(mediaDetail: MediaDetail): string {
     : "Analysis detail: default pass. Inspect the supplied video with normal detail and use visible text, code, charts, labels, movement, and temporal order when they are relevant to the question.";
 }
 
-async function analyzeMediaWithStepfun(mediaPath: string, prompt: string, mediaDetail: MediaDetail): Promise<string> {
+async function analyzeMediaWithStepfun(mediaPath: string, prompt: string, mediaDetail: MediaDetail, options: ProviderOptions = {}): Promise<string> {
   const sourceMimeType = mediaMimeType(mediaPath);
   if (sourceMimeType.startsWith("audio/")) {
-    const transcript = await transcribeAudioWithStepfun(mediaPath, sourceMimeType);
-    return analyzeTextWithStepfun(`${prompt}\n\nASR TRANSCRIPT (language evidence):\n${transcript}`);
+    const transcript = await transcribeAudioWithStepfun(mediaPath, sourceMimeType, options);
+    return analyzeTextWithStepfun(`${prompt}\n\nASR TRANSCRIPT (language evidence):\n${transcript}`, options);
   }
   const detailedPrompt = `${stepfunDetailInstruction(mediaDetail)}\n\n${prompt}`;
   if (stepfunBaseUrl().toLowerCase().includes("step_plan")) {
@@ -241,14 +277,14 @@ async function analyzeMediaWithStepfun(mediaPath: string, prompt: string, mediaD
     return analyzeContentWithStepfun([
       { type: "video_url", video_url: { url: dataUrl } },
       { type: "text", text: detailedPrompt },
-    ]);
+    ], options);
   }
   const bytes = await fs.readFile(mediaPath);
   const mimeType = sourceMimeType;
   const form = new FormData();
   form.append("purpose", "storage");
   form.append("file", new Blob([bytes], { type: mimeType }), path.basename(mediaPath));
-  const uploadResponse = await stepfunRequest("/files", { method: "POST", body: form });
+  const uploadResponse = await stepfunRequest("/files", { method: "POST", body: form }, options.context);
   const uploaded = await uploadResponse.json() as { id?: string; data?: { id?: string } };
   const fileId = uploaded.id ?? uploaded.data?.id;
   if (!fileId) throw new Error("StepFun did not return a file ID after upload.");
@@ -256,13 +292,13 @@ async function analyzeMediaWithStepfun(mediaPath: string, prompt: string, mediaD
     return await analyzeContentWithStepfun([
       { type: "video_url", video_url: { url: `stepfile://${fileId}` } },
       { type: "text", text: detailedPrompt },
-    ]);
+    ], options);
   } finally {
-    await stepfunRequest(`/files/${fileId}`, { method: "DELETE" }).catch(() => undefined);
+    await stepfunRequest(`/files/${fileId}`, { method: "DELETE", signal: AbortSignal.timeout(5_000) }).catch(() => undefined);
   }
 }
 
-async function analyzeContentWithStepfun(content: unknown[]): Promise<string> {
+async function analyzeContentWithStepfun(content: unknown[], options: ProviderOptions = {}): Promise<string> {
   const completion = await stepfunRequest("/chat/completions", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -270,14 +306,14 @@ async function analyzeContentWithStepfun(content: unknown[]): Promise<string> {
       model: process.env.STEPFUN_VIDEO_MODEL ?? "step-3.7-flash",
       messages: [{ role: "user", content }],
     }),
-  });
+  }, options.context);
   const result = await completion.json() as { choices?: Array<{ message?: { content?: string } }> };
   const text = result.choices?.[0]?.message?.content;
   if (!text) throw new Error("StepFun returned no text response for this media.");
   return text;
 }
 
-async function transcribeAudioWithStepfun(audioPath: string, mimeType: string): Promise<string> {
+async function transcribeAudioWithStepfun(audioPath: string, mimeType: string, options: ProviderOptions = {}): Promise<string> {
   const bytes = await fs.readFile(audioPath);
   const response = await stepfunRequest("/audio/asr/sse", {
     method: "POST",
@@ -291,14 +327,14 @@ async function transcribeAudioWithStepfun(audioPath: string, mimeType: string): 
         input: {
           transcription: {
             model: process.env.STEPFUN_ASR_MODEL ?? "stepaudio-2.5-asr",
-            language: process.env.STEPFUN_ASR_LANGUAGE ?? "zh",
+            language: options.language ?? process.env.STEPFUN_ASR_LANGUAGE ?? "zh",
             enable_itn: true,
           },
           format: { type: "wav" },
         },
       },
     }),
-  });
+  }, options.context);
   const streamText = await response.text();
   const deltas: string[] = [];
   const doneTexts: string[] = [];
@@ -313,7 +349,7 @@ async function transcribeAudioWithStepfun(audioPath: string, mimeType: string): 
     }
     if (event.type === "transcript.text.delta" && event.delta) deltas.push(event.delta);
     else if (event.type === "transcript.text.done" && event.text) doneTexts.push(event.text);
-    else if (event.type === "error") throw new Error(`StepFun ASR error: ${event.message ?? "unknown error"}`);
+    else if (event.type === "error") throw new Error(`StepFun ASR error: ${redactSensitiveText(event.message ?? "unknown error")}`);
   }
   const transcript = doneTexts.join("") || deltas.join("");
   if (!transcript.trim()) throw new Error("StepFun ASR returned no transcript.");
@@ -322,9 +358,15 @@ async function transcribeAudioWithStepfun(audioPath: string, mimeType: string): 
 
 export { transcribeAudioWithStepfun };
 
-export async function analyzeTextWithProvider(prompt: string): Promise<string> {
+export async function transcribeAudioWithProvider(audioPath: string, options: ProviderOptions = {}): Promise<string> {
+  if (selectedProvider() === "stepfun") return transcribeAudioWithStepfun(audioPath, mediaMimeType(audioPath), options);
+  return analyzeMediaWithProvider(audioPath, "Transcribe only the supplied audio verbatim. Do not summarize or invent timestamps. The source is audio-only." + (options.language ? ` Language: ${options.language}.` : ""), "default", options);
+}
+
+export async function analyzeTextWithProvider(prompt: string, options: ProviderOptions = {}): Promise<string> {
   const provider = selectedProvider();
-  if (provider === "stepfun") return analyzeTextWithStepfun(prompt);
+  remaining(options.context);
+  if (provider === "stepfun") return analyzeTextWithStepfun(prompt, options);
 
   const apiKey = process.env.GEMINI_API_KEY;
   if (!apiKey) {
@@ -334,6 +376,7 @@ export async function analyzeTextWithProvider(prompt: string): Promise<string> {
   const response = await ai.models.generateContent({
     model: process.env.GEMINI_VIDEO_MODEL ?? "gemini-2.5-flash",
     contents: prompt,
+    config: { abortSignal: options.context?.signal },
   });
   if (!response.text) {
     throw new Error("Gemini returned no text response.");
@@ -341,7 +384,7 @@ export async function analyzeTextWithProvider(prompt: string): Promise<string> {
   return response.text;
 }
 
-async function analyzeTextWithStepfun(prompt: string): Promise<string> {
+async function analyzeTextWithStepfun(prompt: string, options: ProviderOptions = {}): Promise<string> {
   const completion = await stepfunRequest("/chat/completions", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -349,15 +392,15 @@ async function analyzeTextWithStepfun(prompt: string): Promise<string> {
       model: process.env.STEPFUN_VIDEO_MODEL ?? "step-3.7-flash",
       messages: [{ role: "user", content: prompt }],
     }),
-  });
+  }, options.context);
   const result = await completion.json() as { choices?: Array<{ message?: { content?: string } }> };
   const text = result.choices?.[0]?.message?.content;
   if (!text) throw new Error("StepFun returned no text response.");
   return text;
 }
 
-export async function analyzeWithProvider(request: AnalysisRequest): Promise<string> {
-  return analyzeMediaWithProvider(request.videoPath, buildVisualResearchPrompt(request), request.mediaDetail);
+export async function analyzeWithProvider(request: AnalysisRequest, options: ProviderOptions = {}): Promise<string> {
+  return analyzeMediaWithProvider(request.videoPath, buildVisualResearchPrompt(request), request.mediaDetail, options);
 }
 
 // Backward-compatible aliases for callers that imported the original names.

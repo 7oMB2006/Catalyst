@@ -1,573 +1,139 @@
-# Bilibili Video Research
+# Catalyst
 
-<p align="right">
-  <strong>English</strong> · <a href="./README.zh-CN.md">简体中文</a>
-</p>
-<p align="center">
-  <img src="./assets/readme/hero.png" width="100%" alt="Bilibili Video Research: a Bilibili URL flows through language, vision, or multimodal evidence into a traceable research report">
-</p>
+[简体中文](./README.zh-CN.md) · English
 
-<p align="center">
-  <img src="./assets/readme/character.gif" width="160" alt="Animated character mascot">
-</p>
+Catalyst is a video research MCP server for existing agents. It brings Bilibili and YouTube into a shared workflow for language, visual, or multimodal questions, with explicit evidence sources, source-time ranges, availability states, and analysis limits.
 
-<p align="center">
-  An evidence-aware Bilibili video research MCP for Codex, OpenCode, and other MCP-compatible clients.
-</p>
+Catalyst evolves from [Bilibili Video Research](https://github.com/7oMB2006/Bilibili-Video-Research), retaining its Git history and existing BVR tools. This is an early preview, installed from source.
 
-Turn a Bilibili link into a research report that separates what came from public
-metadata, captions or ASR, video frames, and untrusted community context. Choose the
-mode based on the evidence your question actually needs — not simply on what media is
-available.
+## Preview scope
 
-Every result also emits a deterministic `VIDEO CONTEXT` block containing public metadata and an explicit community-context status. The selected mode controls media evidence only; it does not remove the video context.
+| Source | Scope |
+| --- | --- |
+| Bilibili | Public video metadata, available captions or audio fallback, media research, and optional sampled comments. Access and source quality depend on the video and authorized account. |
+| YouTube | Public video metadata, available manual or automatic JSON3 captions, and media research. Comment sampling reports `unsupported` in this preview. |
+| Local files | Existing visual analysis and silent-window inspection tools. |
+| Douyin and Xiaohongshu | Acquisition research candidates; no preview support claim. |
 
-## Demo Video
+Discovery, cross-platform search, and long-running task scheduling are later work. The host agent owns the overall task and conversation.
 
-[Project demo on Bilibili: Let an Agent help you research videos](https://www.bilibili.com/video/BV1dPeP6REwM/)
+## Installation
 
-## Ecosystem
+Requirements:
 
-[Glama listing](https://glama.ai/mcp/servers/7oMB2006/Bilibili-Video-Research) — inspect the indexed server, tool schemas, and quality metadata.
-
-## Before you start
-
-This is a local MCP server, but public metadata, archive tags, optional sampled comments, and selected media or text evidence may be sent to the provider configured in `.env`. Provider requests may consume API balance or subscription credits, and the selected provider's pricing and data terms apply. For a first run, use a short public video or an explicit source window; review [Data and access boundary](#data-and-access-boundary) before using sensitive content.
-
-## What it does
-
-| Mode | Uses | Excludes | Best for |
-| --- | --- | --- | --- |
-| `language` | Bilibili captions when available; otherwise the selected provider's transcription/ASR path (`stepaudio-2.5-asr` for StepFun) | Video-frame inference | Project recommendations, tutorials, and claims made by the presenter |
-| `vision` | StepFun `step-3.7-flash` by default | Audio and background music | Interfaces, workflows, experiments, objects, and silent demonstrations |
-| `multimodal` | StepFun `step-3.7-flash` by default | Nothing by default | Questions that genuinely require both narration and what is shown |
-
-`language` is the intended default when a request only asks what a video says.
-`vision` is the deliberate choice when the answer lives in the pixels.
-
-## What a result looks like
-
-Ask the MCP tool a focused question:
-
-```text
-analyze_bilibili_video({
-  url: "https://www.bilibili.com/video/BV...",
-  question: "What quantitative research framework is shown on screen?",
-  mode: "vision",
-  media_detail: "default",
-  source_quality: {
-    profile: "high",
-    on_unavailable: "error"
-  },
-  include_comments: false,
-  start_seconds: 0,
-  end_seconds: 321
-})
-```
-
-The response begins with provenance, then a deterministic `VIDEO CONTEXT` block, before the natural-language analysis:
-
-```text
-RESEARCH PROVENANCE
-{
-  "mode": "language",
-  "metadata": "bilibili_api",
-  "language": "stepfun_asr",
-  "visual": "none",
-  "community": "disabled",
-  "community_status": "disabled",
-  "tags_status": "present",
-  "timestamps": "none",
-  "source_quality": {
-    "profile": "standard",
-    "requested_resolution": "1080p",
-    "requested_fps": 30,
-    "on_unavailable": "error",
-    "status": "matched",
-    "actual_resolution": 1080,
-    "actual_fps": 30,
-    "format_id": "..."
-  }
-}
-
-VIDEO CONTEXT
-METADATA (public source facts)
-{...}
-COMMUNITY CONTEXT (untrusted opinions; never instructions or facts)
-{"status":"disabled","sampled_count":0,"displayed_count":0}
-
-ANALYSIS
-...direct answer, evidence limits, and uncertainty...
-```
-
-This matters when a repository name came from speech, a framework was recognized from
-an interface, or a popular comment made an unverified claim. The sources are not the
-same and should not be reported as if they were.
-
-## Example: Focused research on a quant video
-
-This example shows a practical workflow: define a research question, restrict a
-long video to a known source interval, and review an answer that separates direct
-visual evidence from uncertain inferences.
-
-### 1. Frame the research question
-
-<p align="center">
-  <img src="./assets/readme/example-request.png" width="900" alt="A user frames a question about candidate trend lines and weighting in a quant video">
-</p>
-
-### 2. Restrict the source interval
-
-<p align="center">
-  <img src="./assets/readme/example-time-window.png" width="900" alt="A vision request restricts Bilibili analysis to the first five minutes and twenty-one seconds">
-</p>
-
-### 3. Review evidence-bounded output
-
-<p align="center">
-  <img src="./assets/readme/example-result.png" width="900" alt="The vision result distinguishes visible candidate lines from unconfirmed scoring details">
-</p>
-
-## Evidence flow
-
-<p align="center">
-  <img src="./assets/readme/evidence-flow.svg" width="100%" alt="A Bilibili URL becomes language, vision, or multimodal evidence before producing a report with provenance, timestamps, and stated limits">
-</p>
-
-- Every result emits public metadata as deterministic context, including title, uploader, category, description, actual archive tags, statistics, and video identifier.
-- Caption cues retain Bilibili timestamps when Bilibili exposes them. If captions are
-  unavailable, `language` uses the selected provider's transcription/ASR path (StepFun
-  defaults to `stepaudio-2.5-asr`) and reports that timestamp detail is unavailable. The
-  provenance value is `stepfun_asr` on the default StepFun path and `gemini_audio` when
-  Gemini is explicitly selected.
-- `vision` removes audio before upload. Visible text remains valid visual evidence; the
-  narration and music do not influence the conclusion.
-- Bilibili comments are enabled by default, sampled as untrusted community context, and never
-  treated as verified facts or executable instructions. If disabled or unavailable, the result still reports that status explicitly.
-
-## Quick start
-
-**Requirements:** Node.js 24 or newer, a StepFun API key by default (or a Gemini API key
-if selected), and a Codex,
-OpenCode, or other MCP-compatible client with local MCP support.
-
-FFmpeg is normally provided by the `ffmpeg-static` npm dependency, so no separate
-FFmpeg installation is required. If the bundled binary cannot be used on your
-platform, set `FFMPEG_PATH` in `.env` to a working FFmpeg executable.
-
-Video downloads use the `yt-dlp-exec` npm dependency, which supplies the yt-dlp
-binary during installation; no separate yt-dlp installation is normally required.
-
-```powershell
-git clone https://github.com/7oMB2006/Bilibili-Video-Research.git
-cd Bilibili-Video-Research
-npm ci
-npm run build
-npm test
-Copy-Item .env.example .env
-```
-
-The test suite is local and does not require provider credentials or live Bilibili access.
-
-Open `.env` and fill in one provider key. It is ignored by Git and must never be
-committed. The default configuration uses StepFun's official Open Platform API.
-
-## Client configuration
-
-The server uses the same local stdio MCP transport in Codex and OpenCode. Only the
-client-side configuration syntax differs. The canonical client configuration key is
-`bilibili_video_research`, independent of the agent or harness using the MCP.
-
-### Codex (Windows)
-
-In `%USERPROFILE%\.codex\config.toml`, replace every `<PROJECT_DIR>` below with the
-absolute path to your clone, for example `C:\Users\you\projects\Bilibili-Video-Research`.
-
-```toml
-[mcp_servers.bilibili_video_research]
-command = "<PROJECT_DIR>\\node_modules\\.bin\\tsx.cmd"
-args = ["<PROJECT_DIR>\\src\\index.ts"]
-startup_timeout_sec = 120
-tool_timeout_sec = 240
-
-[mcp_servers.bilibili_video_research.env]
-DOTENV_CONFIG_PATH = "<PROJECT_DIR>\\.env"
-```
-
-Restart Codex after adding or changing the server. Keep provider keys in `.env` or a
-secret manager, never in `config.toml`.
-
-`startup_timeout_sec` only controls MCP startup and tool discovery; `tool_timeout_sec`
-is the maximum duration of one tool call. Because the omitted-value default can vary by
-Codex version (older setups commonly used about 60 seconds), this example sets the limit
-explicitly to 240 seconds. A Bilibili request may combine metadata requests, video
-download, FFmpeg processing, media upload, and model inference in one call; increase the
-value further when researching unusually long videos or working on a slow connection.
-
-### OpenCode
-
-In the global `~/.config/opencode/opencode.json` or a project-level `opencode.json`,
-add the local MCP server. On Windows, `<PROJECT_DIR>` should be an absolute path.
-
-```jsonc
-{
-  "$schema": "https://opencode.ai/config.json",
-  "mcp": {
-    "bilibili_video_research": {
-      "type": "local",
-      "enabled": true,
-      "command": [
-        "<PROJECT_DIR>\\node_modules\\.bin\\tsx.cmd",
-        "<PROJECT_DIR>\\src\\index.ts"
-      ],
-      "environment": {
-        "DOTENV_CONFIG_PATH": "<PROJECT_DIR>\\.env"
-      }
-    }
-  }
-}
-```
-
-Restart OpenCode after adding or changing the server. You can verify the connection
-with `opencode mcp list`. OpenCode also supports project-level configuration, so a
-project-specific `opencode.json` can keep this MCP setup close to the repository.
-
-The model selected in Codex or OpenCode is the client-side agent model. It does not
-change the media provider used inside this MCP. Set `CODEX_VIDEO_PROVIDER` and the
-provider keys in `.env` to control the models that receive video, image, or audio
-inputs.
-
-OpenCode references:
-
-- [MCP servers](https://opencode.ai/docs/mcp-servers/)
-- [Configuration](https://opencode.ai/docs/config/)
-
-### DeepSeek Harness / DSH
-
-DSH can use this project as an external MCP server through its official
-`@deepseek-ai/dsh-mcp-client` bridge. This keeps Bilibili Video Research as a
-standard MCP server; it does not require a DSH-specific wrapper or a native DSH
-plugin.
-
-Create a patch file such as `bvr.cordis.yml`, replacing `<PROJECT_DIR>` with the
-absolute path to your clone:
-
-```yaml
-- insert:
-    - id: mcp-bilibili-video-research
-      name: '@deepseek-ai/dsh-mcp-client'
-      config:
-        serverName: bilibili_video_research
-        transport: stdio
-        command: '<PROJECT_DIR>\node_modules\.bin\tsx.cmd'
-        args:
-          - '<PROJECT_DIR>\src\index.ts'
-        cwd: '<PROJECT_DIR>'
-        env:
-          DOTENV_CONFIG_PATH: '<PROJECT_DIR>\.env'
-        toolCallTimeoutMs: 240000
-        failOnStartupError: false
-```
-
-Start DSH with the patch:
-
-```powershell
-dsh web --patch "C:\path\to\bvr.cordis.yml"
-```
-
-After startup, the tools are exposed under names such as
-`mcp__bilibili_video_research__analyze_bilibili_video`. DSH may need a moment to
-finish MCP discovery before the tools appear. For a persistent setup, merge the
-same patch entry into the selected DSH profile's `cordis.patch.yml`; do not
-overwrite existing entries. Keep provider keys in the BVR `.env` file rather than
-putting them in the DSH patch.
-
-DSH references:
-
-- [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness)
-- [DSH MCP client](https://github.com/deepseek-ai/deepseek-harness/tree/main/packages/mcp/mcp-client)
-- [Third-party MCP setup guide](https://github.com/deepseek-ai/deepseek-harness/tree/main/docs/user/guide)
-
-### Step Code
-
-Step Code reads global MCP servers from `~/.stepcode/config.toml` by default. It can
-import MCP entries from Codex or Claude Code on first launch, so check `step mcp list`
-before adding this server to avoid a duplicate.
-
-The BVR server requires Node.js 24 or newer and `npm ci` in the cloned project
-directory. Run Step Code and the MCP server in the same environment. Replace
-`<PROJECT_DIR>` below with the clone's absolute path.
-
-```powershell
-step mcp add bilibili_video_research --env "DOTENV_CONFIG_PATH=<PROJECT_DIR>\.env" -- "<PROJECT_DIR>\node_modules\.bin\tsx.cmd" "<PROJECT_DIR>\src\index.ts"
-```
-
-On Linux or WSL, run the corresponding command in that environment and use its
-absolute project path:
+- Node.js 24 or newer.
+- Python 3.10 or newer when using a Python-based yt-dlp distribution.
+- A working yt-dlp installation with EJS for YouTube, plus FFmpeg.
+- A StepFun or Gemini credential for model analysis.
 
 ```bash
-step mcp add bilibili_video_research --env "DOTENV_CONFIG_PATH=<PROJECT_DIR>/.env" -- "<PROJECT_DIR>/node_modules/.bin/tsx" "<PROJECT_DIR>/src/index.ts"
+git clone https://github.com/7oMB2006/Catalyst.git
+cd Catalyst
+npm ci
+npm run build
+cp .env.example .env
+# Configure the provider and any external binary paths in .env.
+npm run doctor
+npm test
 ```
 
-On Windows, use the PowerShell command above. For WSL, install Node.js and run
-`npm ci` inside WSL, then use the Linux command and WSL paths; do not mix Windows and
-WSL paths. No extra `fd` installation is required for this MCP server.
+On Windows, use `Copy-Item .env.example .env` in place of `cp`; use `py -3 -m pip` or a configured `python -m pip` if `python3` is not available.
 
-Restart Step Code and confirm with `step mcp list`. Keep provider keys in the BVR
-`.env`, never in the Step Code config. Step Code's default per-tool timeout is 300
-seconds. To increase it for long videos, add or change `tool_timeout_sec` in the
-existing server entry in `~/.stepcode/config.toml`, for example:
+Bundled media dependencies are used when available. For an external downloader, install the official Python distribution and set its executable path:
 
-```toml
-tool_timeout_sec = 600
+```bash
+python3 -m pip install 'yt-dlp[default]'
 ```
-
-The provider / Step Plan settings and optional login-session setup from earlier
-sections apply unchanged.
-
-Step Code references:
-
-- [Step Code](https://github.com/stepfun-ai/Step-Code)
-
-## Client-side packaging
-
-This repository provides the MCP layer and does not require a specific agent or harness. If you use Codex or OpenCode, you can use the documented tools and research workflow as a reference and wrap them as a client-specific skill for easier reuse. If you use a personal agent or another harness, you can package the MCP tools according to its own extension model, such as a skill, plugin, command, or system prompt.
-
-The MCP interface is the compatibility boundary guaranteed by this project. Installing the MCP does not automatically create a `Bilibili Video Research` command or skill in every client; the client-side wrapper must be installed or authored separately.
-
-### After installation
-
-Register the local MCP server in the target client, restart the client, and run one public Bilibili request to verify the end-to-end path. A client-side skill or command is an optional wrapper and is not created automatically by installing the MCP.
-
-## Provider selection
-
-### StepFun
-
-The default provider is StepFun through the official Open Platform API. When
-`CODEX_VIDEO_PROVIDER` is unset, the server still selects StepFun; missing StepFun
-credentials are reported as configuration errors rather than silently switching to
-Gemini. Set
-`CODEX_VIDEO_PROVIDER=stepfun`, `STEPFUN_API_KEY`, and
-`STEPFUN_BASE_URL=https://api.stepfun.com/v1` in `.env`. The official URL is also
-used when `STEPFUN_BASE_URL` is omitted; set it explicitly to use Step Plan instead. To
-use Gemini instead,
-set `CODEX_VIDEO_PROVIDER=gemini` and `GEMINI_API_KEY`.
-
-Choose the StepFun base URL that matches your account channel:
-
-| Channel | Base URL | Use |
-| --- | --- | --- |
-| Official Open Platform API | `https://api.stepfun.com/v1` | Standard API billing or balance |
-| Step Plan | `https://api.stepfun.com/step_plan/v1` | Optional Step Plan subscription Credit |
-
-StepFun is the default because `step-3.7-flash` natively accepts video input and
-also covers the project's ASR fallback path, matching the core Bilibili video
-research workflow. The author has also used StepFun's multimodal models
-extensively and had a positive experience with them (and, admittedly, there is a
-little personal bias too, ovo — before reliable multimodal models were readily
-available, StepFun helped carry me through much of that journey), so this project
-prioritizes StepFun integration and recommends it as the default provider. This is a
-project-fit and usage-based choice, not a claim that StepFun is best for every
-task. Step Plan remains available as an optional channel for accounts that have
-Step Plan Credit access. Other providers require their own adapter and are not part of
-the documented setup. In the author's use, the response speed of `step-3.7-flash` has also made it a good fit for
-the repeated, tool-like media-understanding calls common in an MCP workflow.
-
-#### Newer StepFun model compatibility tests
-
-The stable defaults remain `step-3.7-flash` for video understanding and
-`stepaudio-2.5-asr` for the no-caption ASR fallback. The following settings are
-only for keeping the adapter compatible with newer model generations and running
-smoke tests; they are not recommended default changes. If the account exposes
-`step-5-preview`, it can be tested without changing the MCP protocol:
 
 ```env
-STEPFUN_VIDEO_MODEL=step-5-preview
+YTDLP_PATH=/absolute/path/to/yt-dlp
+# Set this when the selected downloader needs a specific Python interpreter.
+YTDLP_PYTHON=/absolute/path/to/python
+FFMPEG_PATH=/absolute/path/to/ffmpeg
 ```
 
-The current StepFun adapter has been smoke-tested to send this model through the
-same Step Plan `chat/completions` `video_url` path. It remains a compatibility-test
-override, not the project default. `STEPFUN_ASR_MODEL` is also configurable, and a
-StepAudio 3 ASR model can be tested through the official Open Platform API when the
-account exposes it:
+The inherited `yt-dlp-exec` package is optional. Its install hook invokes `python`; when that command is absent or too old, npm can omit this optional dependency. Use an external yt-dlp installation through `YTDLP_PATH`, or make Python >=3.10 available as `python` in the installation environment if you want the optional bundle. `YTDLP_PYTHON` controls runtime execution; it does not change that install hook. FFmpeg's bundled binary may also be unavailable on a particular platform; `FFMPEG_PATH` is the explicit fallback.
 
-```env
-STEPFUN_BASE_URL=https://api.stepfun.com/v1
-STEPFUN_ASR_MODEL=stepaudio-3-asr-max
+`npm run doctor` runs the compiled `dist/doctor.js`, so build first. It checks local executable versions and whether a provider credential is configured. It does not contact video platforms or providers, read browser cookies, or test account balance. EJS detection can be inconclusive for standalone binaries; review any warning before a YouTube request. See the [upstream EJS setup guide](https://github.com/yt-dlp/yt-dlp/wiki/EJS).
+
+## Start the MCP server
+
+```bash
+npm start
 ```
 
-The current adapter has smoke-tested that this model is accepted by the existing
-`/audio/asr/sse` request shape. This is only an interface-compatibility check, not
-a claim that its transcription quality has been fully benchmarked or that it should
-replace the stable default. Do not combine an Open Platform model override with a
-Step Plan Base URL or credentials.
+This starts the compiled stdio server. In an MCP host, use `node` as the command and the absolute path to `dist/index.js` as its argument. Set `DOTENV_CONFIG_PATH` to the absolute path to the local `.env` file when the host starts in a different directory. Configure the host's tool timeout to cover the requested research timeout and startup overhead.
 
-For the full cross-provider and historical test record, see
-[Model compatibility test history](./docs/model-compatibility.md).
+Provider credentials belong in the process environment or local `.env`, rather than the host's checked-in configuration. `CODEX_VIDEO_PROVIDER` remains the historical provider selector: `stepfun` by default, or `gemini`.
 
-### Other
-
-- Gemini remains an optional provider.
-- MiniMax is not integrated because this project has not validated an official
-  video-input understanding route.
-- Only StepFun and Gemini are currently integrated; other providers require their own
-  adapter and are not part of the documented setup.
-
-StepFun references:
-
-- [step-3.7-flash quick start](https://platform.stepfun.com/docs/zh/guides/models/step-3.7-flash-quickstart)
-- [video understanding guidance](https://platform.stepfun.com/docs/zh/guides/developer/video-chat)
-- [Step Plan setup](https://platform.stepfun.com/docs/zh/step-plan/quick-start)
-
-## Tool reference
-
-| Tool | Purpose |
-| --- | --- |
-| `analyze_bilibili_video` | Research a public `bilibili.com` or `b23.tv` link in `language`, `vision`, or `multimodal` mode; optionally restrict analysis with `start_seconds` and `end_seconds` |
-| `analyze_video` | Inspect a local video visually after removing its audio track |
-| `inspect_video_window` | Inspect one precise audio-free source interval for detailed visual research |
-
-### Source quality and analysis detail
-
-`media_detail` and `source_quality` control different layers:
-
-- `media_detail` controls provider-side analysis detail after the media has been
-  acquired. Use `"low"` for a broad coarse pass and `"default"` for small UI text,
-  code, movement, or close inspection. Gemini maps `"low"` to its lower media
-  resolution level; the current StepFun adapter instead adds an explicit coarse/detail
-  instruction to the prompt. This remains a provider/model hint rather than a guarantee
-  of exact frame sampling.
-- `source_quality` controls the quality requested from Bilibili before analysis.
-  It affects `analyze_bilibili_video` downloads only, not local-video tools or a
-  language request that can use Bilibili captions without downloading media.
-
-The `source_quality` profiles are:
-
-| Profile | Target |
-| --- | --- |
-| `standard` (default) | `1080p30` |
-| `high` | `1440p30` |
-| `custom` | Explicit `resolution` (`720p`, `1080p`, `1440p`, or `2160p`) and `fps` (`30` or `60`) |
-
-Use `on_unavailable: "error"` (the default) to refuse a source below the target
-instead of silently downgrading. Use `"warn"` only when a reported lower-quality
-fallback is acceptable. If the exact target is unavailable but a source at or
-above the requested resolution and frame rate exists, the closest available source
-may be selected and its actual quality is recorded in provenance.
-
-An Agent can choose the inputs from the evidence needed by the question:
-
-| Research need | Suggested call |
-| --- | --- |
-| What the presenter says | `mode: "language"`, `media_detail: "low"`, `source_quality: { profile: "standard" }` |
-| Small UI, code, or chart text | `mode: "vision"`, `media_detail: "default"`, `source_quality: { profile: "high" }`, preferably with a focused time window |
-| Fast motion or frame-sensitive changes | `mode: "vision"`, `source_quality: { profile: "custom", resolution: "1080p", fps: 60 }` |
-| Long video with a precise visual question | First scan with `standard` and low detail, then make a second focused-window call with `high` or a custom profile |
-
-For example, a second pass for a small on-screen interface could be:
+## Research a video
 
 ```text
-analyze_bilibili_video({
-  url: "https://www.bilibili.com/video/BV...",
-  question: "What labels and parameter values are visible in this interface?",
+analyze_video_url({
+  url: "https://www.youtube.com/watch?v=jNQXAC9IVRw",
+  question: "Which animals are visible, and what features can actually be seen?",
   mode: "vision",
   media_detail: "default",
-  source_quality: {
-    profile: "custom",
-    resolution: "2160p",
-    fps: 30,
-    on_unavailable: "error"
-  },
-  start_seconds: 312,
-  end_seconds: 348
+  include_comments: false,
+  start_seconds: 0,
+  end_seconds: 15,
+  timeout_seconds: 240
 })
 ```
 
-For a known source interval, pass `start_seconds` and `end_seconds` together. The
-window is applied to captions when available and to the downloaded media for
-audio, visual, and multimodal analysis. Explicit windows skip the automatic
-long-video coarse pass.
+| Mode | Evidence used |
+| --- | --- |
+| `language` | Available platform captions first; otherwise audio/ASR. Video frames are excluded. |
+| `vision` | Video with its audio removed. Visible text remains valid visual evidence. |
+| `multimodal` | Original audio and visual channels. |
 
-## Motion and transition analysis
+Provide `start_seconds` and `end_seconds` together. For media longer than 900 seconds, the generic tool requires an explicit window of at most 900 seconds; otherwise it returns `WINDOW_REQUIRED`. Caption-only language research is not subject to this media-upload limit. The legacy BVR entry retains its coarse/detail pass for long visual videos. `language` can select a preferred caption/ASR language. Actual capabilities and failures are reported for each source; an unavailable comment path does not establish that video research failed.
 
-When the question depends on animation, camera movement, or a shot boundary, do
-not classify the transition from sparse before-and-after frames alone. First use
-a broad, low-detail pass to locate likely boundaries, then inspect a narrow
-`start_seconds`/`end_seconds` window at `media_detail: "default"` so the
-intermediate motion remains observable.
-
-Keep observations separate from inferences. Distinguish a hard cut from
-continuous motion such as a push, radial collapse or expansion, paper or plane
-flip, mask wipe, perspective movement, or shape morphing. Record the approximate
-direction and duration when visible. If the selected window cannot establish
-continuity, report that limitation instead of calling it a hard cut.
-
-For motion-heavy references, a boundary table is usually easier to verify:
-`time`, outgoing element, incoming element, transition type, direction, duration,
-confidence, and evidence. Keep visual evidence separate from any advice about
-reconstructing the effect.
-
-## Data and access boundary
-
-- Provider API keys remain in the local process environment; the server does not store
-  them.
-- Public metadata, archive tags, optional sampled comments, and selected media or text
-  evidence may be sent to the configured provider. Provider media uploads or data URLs
-  may leave the local machine. Review the applicable provider terms before using
-  sensitive videos.
-- Provider requests may consume API balance or subscription credits. Check the selected
-  provider's pricing and quota before long or multimodal runs; use an explicit source
-  window when possible.
-- Public Bilibili access is attempted first. Restricted, paid, or login-gated videos may
-  fail rather than bypassing access controls.
-- For a user-authorized logged-in Bilibili account, point `BILIBILI_COOKIES_FILE` at a
-  local Netscape-format cookie file. Never commit it or paste its contents into chat:
+The new tool uses an available source by default, recording its actual quality. Visual and multimodal acquisition prefer formats at or below 1080p; inspect the reported dimensions when a source fallback is used. The default media-file budget is 256 MiB, configurable through `CATALYST_MAX_MEDIA_MB`. Acquisition can download the entire source before cutting the requested interval, and this preview has no cross-request media or transcription cache. To impose a quality threshold, supply `source_quality`, for example:
 
 ```text
-BILIBILI_COOKIES_FILE=/absolute/path/to/cookies.txt
+source_quality: { profile: "high", on_unavailable: "error" }
 ```
 
-`BILIBILI_COOKIES_FILE` takes precedence over the optional legacy setting
-`BILIBILI_COOKIES_FROM_BROWSER=edge` (or `chrome`, `firefox`, `brave`). Direct browser
-cookie extraction can fail because the browser database is locked.
+Profiles inherited from BVR are `standard` (1080p30), `high` (1440p30), and `custom` with explicit resolution/fps. A missing target fails by default; `on_unavailable: "warn"` allows a reported fallback. Requesting higher quality cannot recover detail absent from the original video.
 
-### Optional Bilibili login session
+## Evidence and results
 
-Ordinary public videos are attempted anonymously first. Configure a logged-in
-Bilibili session only when anonymous access fails or cannot expose the source
-quality you need; a Cookie file is not required for normal public videos.
+The generic tool returns structured results together with readable text. The result records video identity, requested mode/window, per-capability states, evidence, findings, warnings, errors, and processing information.
 
-1. Sign in to Bilibili in your browser.
-2. Use a trusted local cookie exporter that produces a `cookies.txt` file in the
-   standard Netscape/Mozilla format. `Get cookies.txt LOCALLY` is one possible
-   extension: Chrome, Edge, and Brave use its Chrome Web Store version, while
-   Firefox uses its Firefox Add-ons version. If your browser cannot install this
-   extension, use another trusted local exporter that can generate the same
-   format. Install extensions only from an official browser store and prefer
-   exporting the current Bilibili site rather than all sites.
-3. Save the file somewhere private, for example:
+- Caption evidence retains source cue times and language.
+- A media window records the interval supplied for analysis. It does not give every generated sentence a verified timestamp.
+- Model findings remain `verification: "unverified"`. References to real evidence IDs validate the reference structure, not the truth of each statement.
+- Frame numbers and precise times generated by a model are not deterministic extraction records. Missing or unconfirmed precision stays explicit.
+- `complete`, `partial`, and `unavailable` distinguish an analysis response from retained evidence or a failure. Unavailable provider usage and monetary cost remain unknown.
 
-   ```text
-   C:/Users/<username>/Documents/bilibili/cookies.txt
-   ```
+Review supporting source material before relying on a specific claim. The [architecture](./docs/architecture.md) and [validation record](./docs/validation.md) describe these boundaries.
 
-4. Tell your local agent the file path only. Do not paste `SESSDATA`, `bili_jct`,
-   or the contents of the Cookie file into chat. The agent can set:
+## BVR compatibility
 
-   ```env
-   BILIBILI_COOKIES_FILE=C:/Users/<username>/Documents/bilibili/cookies.txt
-   ```
+The existing tools remain available:
 
-5. Restart the MCP client and retry the request. If the client and browser share
-   the same local profile, `BILIBILI_COOKIES_FROM_BROWSER=edge` (or `chrome`,
-   `firefox`, `brave`) is an alternative, but browser database locks can make
-   explicit export files more reliable.
+- `analyze_bilibili_video`: the Bilibili-specific tool and its legacy text/provenance format.
+- `analyze_video`: visual analysis of a local video.
+- `inspect_video_window`: visual analysis of a local source interval.
 
-Treat the exported file as a login credential: never commit or upload it, and
-remove it from `.env` and local storage when it is no longer needed. A Cookie
-only supplies the access available to the signed-in account; it does not bypass
-paid, private, or otherwise restricted content.
+The legacy Bilibili tool retains its strict default 1080p30 quality policy. The generic tool's default is available source quality. Existing `STEPFUN_*`, `GEMINI_*`, and `BILIBILI_*` settings remain supported.
+
+Authentication is explicit and platform-scoped. Set an authorized cookies file or browser source only for its intended platform; the YouTube adapter does not reuse Bilibili's credentials. Public metadata, selected captions/audio/video, and optional community content may be sent to the configured model provider.
+
+## Development
+
+```bash
+npm run dev
+npm run typecheck
+npm test
+npm run build
+```
+
+Tests are local and do not require provider credentials or live video platforms. The compiled generic tool has been exercised on YouTube captions, a nonzero YouTube visual window, and Bilibili audio/ASR fallback. The latter returned `partial` with explicit caption access and discarded-citation warnings. These checks validate integration and citation structure, not model accuracy. Exact observations and deployment checks are listed in [validation](./docs/validation.md).
+
+After building, a production deployment can retain `dist` and install with `npm ci --omit=dev`. Both `npm start` and `npm run doctor` then run compiled JavaScript without `tsx`; external media dependencies and provider configuration still need to pass doctor.
 
 ## License
 
-[MIT](./LICENSE)
+[MIT](./LICENSE). Original BVR history and attribution are retained.

@@ -1,483 +1,141 @@
-# Bilibili Video Research
+# Catalyst 催化剂
 
-[English](./README.md) · **简体中文**
+**简体中文** · [English](./README.md)
 
-![Bilibili 视频研究：一个 Bilibili 链接经过语言、视觉或多模态证据处理，形成可追溯的研究报告](./assets/readme/hero.zh-CN.svg)
+Catalyst 为现有 Agent 提供跨平台视频研究 MCP。围绕具体问题，它把 B 站和 YouTube 的可用字幕、音频、画面与公开上下文送入共用研究流程，并返回来源、源时间范围、获取状态和分析限制。
 
-![动态角色表情](./assets/readme/character.gif)
+项目继承自 [Bilibili Video Research](https://github.com/7oMB2006/Bilibili-Video-Research)，保留原有 Git 历史与 BVR 工具。目前是从源码安装的早期预览版。
 
-面向 Codex、OpenCode 及其他兼容 MCP 客户端，具备证据边界意识的 Bilibili 视频研究 MCP。
+## 预览范围
 
-将 Bilibili 链接转成研究报告，并明确区分公开元数据、字幕或 ASR、视频画面，以及不受信任的社区上下文。根据问题真正需要的证据选择模式，而不是因为视频有某种媒介就一股脑全用。每次返回还会固定附带一个 `VIDEO CONTEXT` 区块，包含公开元数据和明确的社区上下文状态；模式只决定媒体证据，不会移除这部分视频上下文。
+| 来源 | 当前范围 |
+| --- | --- |
+| B 站 | 公开视频元数据、可用字幕或音频回退、媒体研究、可选采样评论。实际访问和画质取决于内容及授权账户。 |
+| YouTube | 公开视频元数据、可用人工或自动 JSON3 字幕及媒体研究；本预览版的评论采样返回 `unsupported`。 |
+| 本地视频 | 保留视觉分析和静音片段检查工具。 |
+| 抖音、小红书 | 获取能力调查候选，尚不列为预览版支持平台。 |
 
-## 宣发视频
+跨平台搜索、问题驱动的 Discovery 和长期任务调度属于后续工作。整体任务和对话由宿主 Agent 负责。
 
-[【Bilibili-Video-Research】让 Agent 陪你一起研究视频，更高效地从视频中汲取知识](https://www.bilibili.com/video/BV1dPeP6REwM/)
+## 安装
 
-## 生态入口
+需要：
 
-[Glama 收录页](https://glama.ai/mcp/servers/7oMB2006/Bilibili-Video-Research) —— 查看已收录的服务器、工具定义和质量信息。
-
-## 开始前请知道
-
-这是一个在本地运行的 MCP 服务器，但公开元数据、归档标签、可选采样评论，以及选定的媒体或文本证据可能会发送给 `.env` 中配置的 Provider。Provider 请求可能消耗 API 余额或订阅额度，具体以所选 Provider 的计费与数据条款为准。首次使用建议先选公开短视频或明确限定时间段；使用敏感内容前请先阅读[数据与访问边界](#数据与访问边界)。
-
-## 它能做什么
-
-
-| 模式           | 会使用                            | 会排除     | 适用场景                    |
-| ------------ | ------------------------------ | ------- | ----------------------- |
-| `language`   | Bilibili 字幕；无字幕时走所选 Provider 的转写/ASR 路径（StepFun 使用 `stepaudio-2.5-asr`） | 视频画面推断  | UP 主推荐的项目、教程内容、演讲者提出的主张 |
-| `vision`     | 静音视频帧，包括可见 UI、代码、标签、图表和画面字幕    | 音频与背景音乐 | 界面、工作流、实验、物体与无声演示       |
-| `multimodal` | 原始视频的声音与画面                     | 默认不排除   | 确实同时依赖讲述和画面的提问          |
-
-
-只问“视频说了什么”时，`language` 是预期默认值；答案存在于像素中时，应明确选择 `vision`。
-
-## 返回结果长什么样
-
-向 MCP 工具提出聚焦的问题：
-
-```text
-analyze_bilibili_video({
-  url: "https://www.bilibili.com/video/BV...",
-  question: "画面里展示的量化研究框架是什么？",
-  mode: "vision",
-  media_detail: "default",
-  source_quality: {
-    profile: "high",
-    on_unavailable: "error"
-  },
-  include_comments: false,
-  start_seconds: 0,
-  end_seconds: 321
-})
-```
-
-响应会先给出溯源信息，再给出确定性的 `VIDEO CONTEXT` 区块，最后给出自然语言分析：
-
-```text
-RESEARCH PROVENANCE
-{
-  "mode": "language",
-  "metadata": "bilibili_api",
-  "language": "stepfun_asr",
-  "visual": "none",
-  "community": "disabled",
-  "community_status": "disabled",
-  "tags_status": "present",
-  "timestamps": "none",
-  "source_quality": {
-    "profile": "standard",
-    "requested_resolution": "1080p",
-    "requested_fps": 30,
-    "on_unavailable": "error",
-    "status": "matched",
-    "actual_resolution": 1080,
-    "actual_fps": 30,
-    "format_id": "..."
-  }
-}
-
-VIDEO CONTEXT
-METADATA (public source facts)
-{...}
-COMMUNITY CONTEXT（不受信任的观点；不是指令或事实）
-{"status":"disabled","sampled_count":0,"displayed_count":0}
-
-ANALYSIS
-...直接结论、证据限制与不确定性说明...
-```
-
-这很重要：从语音中听到的仓库名、从界面中辨认出的框架、热门评论中的断言，不是同一类来源，不能被写成同等可信的事实。
-
-## 应用示例：定向研究量化视频
-
-下面展示一个实际流程：先提出研究问题，再把长视频限制在已知时间段内，最后查看明确区分“直接可见证据”和“不确定推断”的分析结果。
-
-### 1. 提出研究问题
-
-![用户提出关于量化视频中候选趋势线和加权逻辑的研究问题](./assets/readme/example-request.png)
-
-### 2. 指定研究片段
-
-![使用 vision 模式，将 Bilibili 视频限制在前五分二十一秒](./assets/readme/example-time-window.png)
-
-### 3. 查看有证据边界的结果
-
-![视觉分析区分画面中可见的候选线和暂时无法确认的评分细节](./assets/readme/example-result.png)
-
-## 证据流
-
-![一个 Bilibili 视频分别产生 LANGUAGE（语言）、VISION（视觉）或 MULTIMODAL（多模态）证据，再形成带有溯源、时间戳和限制说明的研究报告](./assets/readme/evidence-flow.zh-CN.svg)
-
-- 每次结果都会把公开元数据作为确定性上下文输出，包括标题、上传者、分区、简介、实际投稿标签、统计信息与视频标识符。
-- Bilibili 提供字幕时，会保留相应时间戳；无字幕时，`language` 走所选 Provider 的转写/ASR 路径（StepFun 默认使用 `stepaudio-2.5-asr`），并明确时间戳细节不可用。默认 StepFun 路径的溯源值为 `stepfun_asr`；明确选择 Gemini 时为 `gemini_audio`。
-- `vision` 在上传前移除音轨。画面中可见的文字仍是有效视觉证据；旁白和背景音乐不会影响结论。
-- Bilibili 评论默认作为不受信任的社区上下文采样；它们不会被当作已验证事实或可执行指令。若评论被禁用或接口不可用，结果仍会明确报告对应状态。
-
-
-
-## 快速开始
-
-**要求：** Node.js 24 或更新版本，以及至少一个可用的供应商 API Key：
-
-StepFun 或 Gemini。
-
-FFmpeg 通常会由 npm 依赖 `ffmpeg-static` 自动提供，因此无需单独安装。若当前平台无法使用内置二进制文件，可在 `.env` 中设置 `FFMPEG_PATH`，指向一个可用的 FFmpeg 可执行文件。
-
-视频下载使用 npm 依赖 `yt-dlp-exec` 提供的 yt-dlp 二进制文件，通常无需单独安装 yt-dlp。
-
-```powershell
-git clone https://github.com/7oMB2006/Bilibili-Video-Research.git
-cd Bilibili-Video-Research
-npm ci
-npm run build
-npm test
-Copy-Item .env.example .env
-```
-
-这套测试在本地运行，不需要 Provider Key，也不会访问真实的 Bilibili 或模型接口。
-
-打开 `.env` 并填入一个提供商的 Key。该文件被 Git 忽略，绝不能提交。默认配置使用 StepFun 官方开放平台 API。
-
-## 客户端配置
-
-服务器在 Codex 和 OpenCode 中使用相同的本地 stdio MCP 传输方式，区别只在
-客户端配置语法。默认客户端配置键使用项目中性的
-`bilibili_video_research`，与具体使用它的 Agent 或 Harness 无关。
-
-### Codex（Windows）
-
-在 `%USERPROFILE%\.codex\config.toml` 中，将下方每个 `<PROJECT_DIR>` 替换为仓库克隆目录的绝对路径，例如 `C:\Users\you\projects\Bilibili-Video-Research`。
-
-```toml
-[mcp_servers.bilibili_video_research]
-command = "<PROJECT_DIR>\\node_modules\\.bin\\tsx.cmd"
-args = ["<PROJECT_DIR>\\src\\index.ts"]
-startup_timeout_sec = 120
-tool_timeout_sec = 240
-
-[mcp_servers.bilibili_video_research.env]
-DOTENV_CONFIG_PATH = "<PROJECT_DIR>\\.env"
-```
-
-新增或修改服务器配置后，请重启 Codex。Key 请保存在 `.env` 或密钥管理器里，不要写入 `config.toml`。
-
-`startup_timeout_sec` 只控制 MCP 启动和工具发现；`tool_timeout_sec` 才是单次工具调用上限。由于省略该配置时的默认值可能随 Codex 版本变化（旧版本常见约 60 秒），示例在这里将上限显式设为 240 秒。一次 Bilibili 研究可能串联元数据请求、视频下载、FFmpeg 处理、媒体上传和模型推理；如果研究特别长的视频或网络较慢，可以按需继续调大。
-
-### OpenCode
-
-在全局配置 `~/.config/opencode/opencode.json` 或项目级 `opencode.json` 中添加本地 MCP。Windows 下的 `<PROJECT_DIR>` 应填写仓库克隆目录的绝对路径。
-
-```jsonc
-{
-  "$schema": "https://opencode.ai/config.json",
-  "mcp": {
-    "bilibili_video_research": {
-      "type": "local",
-      "enabled": true,
-      "command": [
-        "<PROJECT_DIR>\\node_modules\\.bin\\tsx.cmd",
-        "<PROJECT_DIR>\\src\\index.ts"
-      ],
-      "environment": {
-        "DOTENV_CONFIG_PATH": "<PROJECT_DIR>\\.env"
-      }
-    }
-  }
-}
-```
-
-新增或修改服务器配置后，请重启 OpenCode。可以运行 `opencode mcp list` 验证连接状态。OpenCode 也支持项目级配置，因此可以将特定于项目的 MCP 设置放在仓库附近的 `opencode.json` 中。
-
-Codex 或 OpenCode 中选择的模型，是客户端侧的代理模型；它不会改变这个 MCP 内部使用的媒体提供商。在 `.env` 中设置 `CODEX_VIDEO_PROVIDER` 和对应的 Provider Key，才能控制实际接收视频、图像或音频输入的模型。
-
-OpenCode 参考：
-
-- [MCP 服务器](https://opencode.ai/docs/zh-cn/mcp-servers/)
-- [配置](https://opencode.ai/docs/zh-cn/config/)
-
-
-
-### DeepSeek Harness / DSH
-
-DSH 可以通过官方的 `@deepseek-ai/dsh-mcp-client` 桥接器使用本项目。
-Bilibili Video Research 仍然是标准 MCP 服务器，不需要改造成 DSH 专用封装或
-原生 DSH 插件。
-
-新建一个类似 `bvr.cordis.yml` 的 patch 文件，并将 `<PROJECT_DIR>` 替换为仓库
-克隆目录的绝对路径：
-
-```yaml
-- insert:
-    - id: mcp-bilibili-video-research
-      name: '@deepseek-ai/dsh-mcp-client'
-      config:
-        serverName: bilibili_video_research
-        transport: stdio
-        command: '<PROJECT_DIR>\node_modules\.bin\tsx.cmd'
-        args:
-          - '<PROJECT_DIR>\src\index.ts'
-        cwd: '<PROJECT_DIR>'
-        env:
-          DOTENV_CONFIG_PATH: '<PROJECT_DIR>\.env'
-        toolCallTimeoutMs: 240000
-        failOnStartupError: false
-```
-
-使用这个 patch 启动 DSH：
-
-```powershell
-dsh web --patch "C:\path\to\bvr.cordis.yml"
-```
-
-启动后，工具会以类似
-`mcp__bilibili_video_research__analyze_bilibili_video` 的名称暴露给 DSH。
-MCP 发现过程可能需要一点时间，第一次发送请求前请等待工具出现。需要持久化
-配置时，将相同的 patch 条目合并到目标 DSH profile 的 `cordis.patch.yml` 中；
-不要覆盖已有条目。Provider Key 继续保存在 BVR 的 `.env` 中，不要直接写进
-DSH patch。
-
-DSH 参考：
-
-- [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness)
-- [DSH MCP 客户端](https://github.com/deepseek-ai/deepseek-harness/tree/main/packages/mcp/mcp-client)
-- [第三方 MCP 接入指南](https://github.com/deepseek-ai/deepseek-harness/tree/main/docs/user/guide)
-
-### Step Code（阶跃 Step Code）
-
-Step Code 默认从 `~/.stepcode/config.toml` 读取全局 MCP server。首次启动时也可以导入 Codex 或 Claude Code 中已有的 MCP 配置；添加前先运行 `step mcp list`，避免重复注册。
-
-BVR 服务端需要 Node.js 24 或更新版本，并且要在克隆目录运行过 `npm ci`。Step Code 与 MCP 服务端应运行在同一环境中。将下面的 `<PROJECT_DIR>` 替换为仓库克隆目录的绝对路径。
-
-```powershell
-step mcp add bilibili_video_research --env "DOTENV_CONFIG_PATH=<PROJECT_DIR>\.env" -- "<PROJECT_DIR>\node_modules\.bin\tsx.cmd" "<PROJECT_DIR>\src\index.ts"
-```
-
-Linux 或 WSL 环境请在对应环境中运行以下命令，并使用该环境里的绝对路径：
+- Node.js 24 或更新版本。
+- 使用 Python 版 yt-dlp 时，需要 Python 3.10 或更新版本。
+- 可执行的 yt-dlp、YouTube 所需的 EJS，以及 FFmpeg。
+- 用于模型分析的 StepFun 或 Gemini 凭据。
 
 ```bash
-step mcp add bilibili_video_research --env "DOTENV_CONFIG_PATH=<PROJECT_DIR>/.env" -- "<PROJECT_DIR>/node_modules/.bin/tsx" "<PROJECT_DIR>/src/index.ts"
+git clone https://github.com/7oMB2006/Catalyst.git
+cd Catalyst
+npm ci
+npm run build
+cp .env.example .env
+# 在 .env 配置 Provider，以及需要覆盖的可执行文件路径。
+npm run doctor
+npm test
 ```
 
-Windows 请使用上面的 PowerShell 命令。若在 WSL 中运行 Step Code，请在 WSL 内安装 Node.js 并运行 `npm ci`，再使用 Linux 命令和 WSL 路径；不要混用 Windows 与 WSL 路径。本 MCP 服务无需额外安装 `fd`。
+Windows PowerShell 使用 `Copy-Item .env.example .env` 替代 `cp`；若没有 `python3` 命令，安装 Python 包时使用 `py -3 -m pip` 或已配置的 `python -m pip`。
 
-重启 Step Code 后运行 `step mcp list` 确认。Provider Key 放在 BVR 的 `.env`，不要写进 Step Code 配置。Step Code 的单次工具调用默认超时为 300 秒；长视频需要更长时间时，可在 `~/.stepcode/config.toml` 中已生成的服务器配置里添加或调整 `tool_timeout_sec`，例如：
+内置媒体依赖可用时会被采用。若需要外部下载器，可在自己的 Python 环境安装官方发行包：
 
-```toml
-tool_timeout_sec = 600
+```bash
+python3 -m pip install 'yt-dlp[default]'
 ```
 
-前文的 Provider / Step Plan 设置与可选登录态配置同样适用。
-
-Step Code 参考：
-
-- [Step Code](https://github.com/stepfun-ai/Step-Code)
-
-## 上层封装建议
-
-本项目提供的是 MCP 核心能力，不绑定特定的 Agent 或 harness。若使用 Codex 或 OpenCode，可以参考本项目的工具说明与研究流程，将其进一步封装为对应平台的 skill，方便重复使用。若使用个人搭建的 Agent 或其他 harness，也可以根据自身的扩展机制，将这些 MCP 工具封装成 skill、插件、命令、system prompt 或其他形式。
-
-本项目保证的兼容边界是 MCP 工具接口。安装 MCP 不会自动在所有客户端中生成名为 `Bilibili Video Research` 的命令或 skill；客户端侧的上层封装需要另行安装或自行编写。
-
-### 安装完成后
-
-在目标客户端注册本地 MCP、重启客户端，再用公开 Bilibili 链接发起一次请求即可验证。客户端侧的 skill 或命令属于可选封装，不会随 MCP 自动生成。
-
-## 提供商选择
-
-
-| 分析模式         | 供应商 / 模型                                     | 说明                                              |
-| ------------ | -------------------------------------------- | ----------------------------------------------- |
-| `language`   | 有 Bilibili 字幕时使用字幕文本；无字幕时走所选 Provider 的转写/ASR 路径（StepFun 使用 `stepaudio-2.5-asr`） | 只理解 UP 主说了什么；字幕或 ASR 文本仍会交给 Provider 分析。 |
-| `vision`     | StepFun `step-3.7-flash`（默认）                 | 只看画面，包括 UI、代码、标签、图表和无声演示。                       |
-| `multimodal` | StepFun `step-3.7-flash`（默认）                 | 同时使用语音/语言和画面。                                   |
-
-
-
-
-### StepFun
-
-默认提供商是通过官方开放平台 API 调用的 StepFun。未设置
-`CODEX_VIDEO_PROVIDER` 时，服务器仍会选择 StepFun；如果缺少 StepFun 凭据，会直接报告配置错误，不会静默回退到 Gemini。在 `.env` 中设置
-`CODEX_VIDEO_PROVIDER=stepfun`、`STEPFUN_API_KEY` 与
-`STEPFUN_BASE_URL=https://api.stepfun.com/v1`。省略 `STEPFUN_BASE_URL` 时也会使用官方开放平台地址；如需 Step Plan，请显式切换 Base URL。
-如需 Gemini，设置
-`CODEX_VIDEO_PROVIDER=gemini` 与 `GEMINI_API_KEY`。
-
-选择 StepFun 作为默认提供商，是因为 `step-3.7-flash` 原生支持视频输入，
-同时能够覆盖本项目的 ASR 回退路径，更贴合 Bilibili 视频研究这一核心工作流。
-此外，作者在多模态任务中使用阶跃星辰的模型较多，且整体体验良好（也有一点私心ovo，以前没有好用的多模态都是他支撑我的一路），因此本项目优先
-对 StepFun 做了适配并将其作为首选提供商。这是基于项目适配度和实际使用体验的选择，
-并不表示 StepFun 在所有任务上都优于其他模型。如果账户拥有 Step Plan Credit，也可以
-将 Base URL 切换到 Step Plan 渠道。其他 Provider 需要自行编写适配器，不属于当前文档化配置。
-在作者的实际使用中，`step-3.7-flash` 的处理速度也比较适合承担 MCP 中由 Agent
-反复调用的媒体理解链路。
-
-#### 新一代 StepFun 模型兼容性测试
-
-稳定默认值仍然是：视频理解使用 `step-3.7-flash`，无字幕时的 ASR 回退使用
-`stepaudio-2.5-asr`。下面的配置仅用于跟进新模型、验证适配器兼容性和进行
-烟囱测试，不是推荐用户修改默认值。如果账户中提供 `step-5-preview`，可以不
-改变 MCP 协议进行测试：
+在 `.env` 指定实际路径：
 
 ```env
-STEPFUN_VIDEO_MODEL=step-5-preview
+YTDLP_PATH=/absolute/path/to/yt-dlp
+# 所选下载器需要特定 Python 解释器时设置。
+YTDLP_PYTHON=/absolute/path/to/python
+FFMPEG_PATH=/absolute/path/to/ffmpeg
 ```
 
-当前 StepFun 适配器已经通过烟囱测试，可以使用 Step Plan 的
-`chat/completions` `video_url` 路径调用这个模型。它只是兼容性测试配置，不会
-成为项目默认值。StepAudio 3 ASR 可以在账户提供该模型时，通过官方开放平台 API
-进行测试：
+继承的 `yt-dlp-exec` 已作为可选依赖。它的安装钩子直接运行 `python`，该命令缺失或版本过旧时，npm 可以跳过这个可选包。此时通过 `YTDLP_PATH` 使用外部 yt-dlp；若希望使用可选内置包，应让安装环境中的 `python` 指向 Python >=3.10。`YTDLP_PYTHON` 只控制运行时，不会改变安装钩子。若当前平台没有可用的内置 FFmpeg 二进制文件，使用 `FFMPEG_PATH` 显式指定。
 
-```env
-STEPFUN_BASE_URL=https://api.stepfun.com/v1
-STEPFUN_ASR_MODEL=stepaudio-3-asr-max
+`npm run doctor` 执行编译后的 `dist/doctor.js`，需要先完成 build。它只检查本机可执行文件和版本，以及 Provider 凭据是否已配置。它不会请求平台或模型，不读取浏览器 Cookie，也不验证账户余额。独立二进制文件中的 EJS 可能无法仅靠离线检查确认，YouTube 请求前应阅读相应提示。[yt-dlp 官方 EJS 说明](https://github.com/yt-dlp/yt-dlp/wiki/EJS)
+
+## 接入 MCP
+
+```bash
+npm start
 ```
 
-当前适配器已经通过烟囱测试，确认这个模型能够接受现有 `/audio/asr/sse` 请求
-格式；这只是接口兼容性验证，不代表已经完成转写质量基准测试，也不代表它应该
-替换稳定默认值。不要把官方开放平台的模型配置与 Step Plan 的 Base URL 或凭据
-混用。
+这会启动编译后的 stdio MCP 服务。宿主配置的 command 使用 `node`，args 使用 `dist/index.js` 的绝对路径。宿主从其他目录启动时，将 `DOTENV_CONFIG_PATH` 设置为本地 `.env` 的绝对路径。宿主的工具超时应覆盖请求中的研究期限和启动开销。
 
-完整的跨 Provider 历史测试记录见
-[模型兼容性测试历史](./docs/model-compatibility.md)。
+Provider 凭据放在进程环境或本地 `.env`，避免写入会提交到仓库的宿主配置。沿用的 `CODEX_VIDEO_PROVIDER` 是历史配置名：默认 `stepfun`，也可选择 `gemini`。
 
-根据账户渠道选择相应的 StepFun base URL：
-
-
-| 渠道         | Base URL                               | 用途                      |
-| ---------- | -------------------------------------- | ----------------------- |
-| 官方开放平台 API | `https://api.stepfun.com/v1`           | 标准 API 计费或余额            |
-| Step Plan  | `https://api.stepfun.com/step_plan/v1` | 可选的 Step Plan 订阅 Credit |
-
-
-`step-3.7-flash` 能通过 Chat Completions 的 `video_url` 内容类型接收图像和视频输入，不需要另配一个视觉模型。
-
-StepFun 参考：
-
-- [step-3.7-flash 快速开始](https://platform.stepfun.com/docs/zh/guides/models/step-3.7-flash-quickstart)
-- [视频理解说明](https://platform.stepfun.com/docs/zh/guides/developer/video-chat)
-- [Step Plan 设置](https://platform.stepfun.com/docs/zh/step-plan/quick-start)
-
-
-
-### 其他
-
-- Gemini 仍是可选提供商。
-- MiniMax 目前未被接入，因为本项目尚未验证其官方视频输入理解接口。
-- 当前仅正式接入 StepFun 和 Gemini；其他 Provider 需要自行编写适配器，不属于当前文档化配置。
-
-## 工具参考
-
-
-| 工具                       | 用途                                                                                                               |
-| ------------------------ | ---------------------------------------------------------------------------------------------------------------- |
-| `analyze_bilibili_video` | 以 `language`、`vision` 或 `multimodal` 研究公开的 `bilibili.com` 或 `b23.tv` 链接，也可用 `start_seconds` 和 `end_seconds` 限定片段 |
-| `analyze_video`          | 移除音轨后，对本地视频进行视觉检查                                                                                                |
-| `inspect_video_window`   | 对精确的静音源视频区间进行细节视觉研究                                                                                              |
-
-
-### 源视频质量与分析细节
-
-`media_detail` 和 `source_quality` 控制的是不同层次：
-
-- `media_detail` 控制媒体获取之后的 Provider 分析细节。长视频粗看使用
-  `"low"`；需要辨认小型 UI 文本、代码、动作或近距离细节时使用 `"default"`。
-  Gemini 会将 `"low"` 映射到较低的媒体分辨率级别；当前 StepFun 适配器则会在
-  提示词中加入明确的粗看/常规细节指令。它仍然是 Provider 或模型的分析提示，
-  不保证精确的抽帧方式。
-- `source_quality` 控制从 Bilibili 下载源视频时请求的质量。它只影响
-  `analyze_bilibili_video` 的下载，不影响本地视频工具；如果 `language` 能直接使用
-  Bilibili 字幕而不需要下载媒体，也不会触发下载。
-
-`source_quality` 支持以下档位：
-
-| 档位 | 目标 |
-| --- | --- |
-| `standard`（默认） | `1080p30` |
-| `high` | `1440p30` |
-| `custom` | 显式指定 `resolution`（`720p`、`1080p`、`1440p` 或 `2160p`）和 `fps`（`30` 或 `60`） |
-
-默认使用 `on_unavailable: "error"`：如果源视频低于目标质量，就拒绝继续，而不是静默降级。只有在确实接受明确记录的低质量回退时，才使用 `"warn"`。如果精确目标不可用，但存在分辨率和帧率都不低于目标的源，工具可以选择最接近的可用源，并在溯源信息中记录实际质量。
-
-Agent 可以根据问题真正需要的证据选择参数：
-
-| 研究需求 | 建议调用 |
-| --- | --- |
-| 了解演讲者说了什么 | `mode: "language"`、`media_detail: "low"`、`source_quality: { profile: "standard" }` |
-| 辨认小型 UI、代码或图表文字 | `mode: "vision"`、`media_detail: "default"`、`source_quality: { profile: "high" }`，最好同时限定时间段 |
-| 研究快速运动或逐帧变化 | `mode: "vision"`、`source_quality: { profile: "custom", resolution: "1080p", fps: 60 }` |
-| 长视频中的具体视觉问题 | 先用 `standard` 和低细节粗扫，再对重点时间段使用 `high` 或 custom 档位二次研究 |
-
-例如，针对画面中的小型界面进行第二轮精看：
+## 研究视频
 
 ```text
-analyze_bilibili_video({
-  url: "https://www.bilibili.com/video/BV...",
-  question: "这个界面中能看见哪些标签和参数值？",
+analyze_video_url({
+  url: "https://www.youtube.com/watch?v=jNQXAC9IVRw",
+  question: "画面里有哪些动物，能直接看见哪些外形特征？",
   mode: "vision",
   media_detail: "default",
-  source_quality: {
-    profile: "custom",
-    resolution: "2160p",
-    fps: 30,
-    on_unavailable: "error"
-  },
-  start_seconds: 312,
-  end_seconds: 348
+  include_comments: false,
+  start_seconds: 0,
+  end_seconds: 15,
+  timeout_seconds: 240
 })
 ```
 
-长视频先粗看时使用 `media_detail: "low"`；需要辨认小型 UI 文本、代码、动作或近距离细节时用 `"default"`。
+| 模式 | 使用的证据 |
+| --- | --- |
+| `language` | 优先平台字幕，无字幕时使用音频或 ASR；排除视频画面。 |
+| `vision` | 上传前移除音轨；画面中可见的文字仍可作为视觉证据。 |
+| `multimodal` | 同时使用原视频的声音与画面。 |
 
-如果已经知道要研究的时间段，可以同时传入 `start_seconds` 和 `end_seconds`。有字幕时会先筛选对应字幕区间；音频、视觉和多模态分析则会对下载后的视频先裁剪。显式指定片段后，会跳过长视频的自动粗扫流程。
+`start_seconds` 与 `end_seconds` 必须成对提供。对超过 900 秒的媒体，通用工具要求显式指定不超过 900 秒的区间，否则返回 `WINDOW_REQUIRED`；仅使用字幕的语言研究不受这个媒体上传限制。旧 BVR 入口继续保留长视觉视频的粗扫与精扫。`language` 参数可指定优先字幕或转写语言。每个平台分别报告素材能力和获取状态，评论不可用不会自动使视频研究失败。
 
-## 运动与转场研究
-
-如果问题依赖动画、镜头运动或镜头边界，不要只根据转场前后的少量静帧判断转场类型。先用较低细节做一次广泛扫描，定位可能的边界；再围绕边界传入较窄的 `start_seconds` / `end_seconds` 区间，并使用 `media_detail: "default"` 检查中间的连续运动。
-
-请把直接观察和推断分开。区分硬切，以及推移、径向收缩或展开、纸张或平面翻转、遮罩擦除、透视运动、形状变形等连续运动。能够看清时记录大致方向和持续时间；如果当前区间不足以确认连续性，应明确说明证据限制，不要直接称为硬切。
-
-对于动效较多的参考视频，建议使用边界表，记录：时间、离场元素、入场元素、转场类型、方向、持续时间、置信度和证据。视觉证据应与后续的效果复现建议分开。
-
-## 数据与访问边界
-
-- 提供商 API Key 只保留在本地进程环境中；服务器不会存储它们。
-- 公开元数据、归档标签、可选采样评论，以及选定的媒体或文本证据可能会发送给配置的 Provider。提供商的视频上传或 data URL 可能离开本机。对敏感视频，请先审阅对应提供商的条款。
-- Provider 请求可能消耗 API 余额或订阅额度。长视频或多模态请求前请确认所选 Provider 的计费与额度；条件允许时优先指定时间段。
-- 先尝试公开 Bilibili 访问。受限、付费或登录门槛视频可能失败；本项目不绕过访问控制。
-- 如需使用用户明确授权的已登录 Bilibili 账户，可将 `BILIBILI_COOKIES_FILE` 指向本地 Netscape 格式 cookie 文件。不要提交它，也不要将内容粘贴到聊天中：
+新工具默认采用实际可用源，并记录真实质量。视觉和多模态获取优先选择不超过 1080p 的格式；发生源格式回退时，应查看实际返回的尺寸。媒体文件预算默认为 256 MiB，可通过 `CATALYST_MAX_MEDIA_MB` 调整。获取流程可能先下载完整源文件，再裁剪所选区间；本预览版没有跨请求的媒体或转写缓存。需要质量门槛时显式指定，例如：
 
 ```text
-BILIBILI_COOKIES_FILE=/absolute/path/to/cookies.txt
+source_quality: { profile: "high", on_unavailable: "error" }
 ```
 
-`BILIBILI_COOKIES_FILE` 优先于可选的旧设置 `BILIBILI_COOKIES_FROM_BROWSER=edge`（也可以是 `chrome`、`firefox`、`brave`）。直接读取浏览器 cookie 可能因数据库被锁定而失败。
+沿用的档位包括 `standard`（1080p30）、`high`（1440p30），以及显式给出 resolution 和 fps 的 `custom`。默认拒绝不满足目标的源；`on_unavailable: "warn"` 允许明确记录的降级。提高目标档位不能补出原视频中不存在的细节。
 
-### 可选的 Bilibili 登录态配置
+## 怎样理解结果
 
-普通公开视频会先尝试匿名访问。只有在匿名访问失败，或匿名状态无法获得你需要的源视频画质时，才需要配置已登录的 Bilibili 账户；普通公开视频不要求 Cookie。
+通用工具同时返回结构化结果和可读文本，记录视频身份、所请求的模式和区间、各素材能力、证据、模型结论、告警、错误及处理信息。
 
-1. 在浏览器中登录 Bilibili。
-2. 使用可信的本地 Cookie 导出工具，将当前站点的 Cookie 导出为标准 `cookies.txt`（通常称为 Netscape/Mozilla 格式）。`Get cookies.txt LOCALLY` 是一种可选的浏览器扩展：Chrome、Edge、Brave 等 Chromium 浏览器使用 Chrome Web Store 版本；Firefox 使用 Firefox Add-ons 版本。若当前浏览器无法安装该扩展，也可以使用其他可信的本地 Cookie 导出工具，只要能生成同样格式的 `cookies.txt` 即可。请只从浏览器官方扩展商店安装，并优先只导出当前 Bilibili 站点，而不是所有网站。
-3. 将文件保存到本地私密位置，例如：
+- 字幕证据保留源视频 cue 时间和语言。
+- 媒体窗口记录送去分析的源区间，不能把每句生成内容都视为具有精确时间引用。
+- 模型结论仍标记 `verification: "unverified"`。引用了有效 evidence_id 只说明引用结构成立，不能自动证明该结论正确。
+- 模型生成的帧号和精确时刻不等于程序抽帧记录。无法确认的时间精度保持明确。
+- `complete`、`partial`、`unavailable` 区分分析返回、部分证据和失败。未获得的 Provider usage 与费用记为未知。
 
-   ```text
-   C:/Users/<username>/Documents/bilibili/cookies.txt
-   ```
+需要依赖某条具体结论时，应继续复查对应来源。[架构说明](./docs/architecture.md)和[验证记录](./docs/validation.md)列出了具体边界。
 
-4. 只把文件路径告诉本地 Agent。不要将 `SESSDATA`、`bili_jct` 或 Cookie 文件内容粘贴到聊天中。Agent 可以在 `.env` 中设置：
+## 兼容 BVR
 
-   ```env
-   BILIBILI_COOKIES_FILE=C:/Users/<username>/Documents/bilibili/cookies.txt
-   ```
+原有工具继续提供：
 
-5. 重启 MCP 客户端并重试。如果客户端和浏览器使用同一台机器上的同一个配置文件，也可以设置 `BILIBILI_COOKIES_FROM_BROWSER=edge`（或 `chrome`、`firefox`、`brave`）；但浏览器数据库可能被锁定，因此显式导出的文件通常更稳定。
+- `analyze_bilibili_video`：B 站专用工具，保留旧文本与 provenance 形式。
+- `analyze_video`：本地视频视觉分析。
+- `inspect_video_window`：本地视频源区间的视觉检查。
 
-请将导出的文件视为登录凭证：不要提交到 Git、上传到云端，也不要发给其他人；不再需要时，从 `.env` 和本地存储中移除。Cookie 只能提供当前登录账户本身拥有的访问权限，不能绕过付费、私密或其他受限内容。
+旧 B 站工具保留默认严格要求 1080p30 的画质语义；通用工具默认使用实际可用源。已有 `STEPFUN_*`、`GEMINI_*`、`BILIBILI_*` 配置继续兼容。
+
+认证按平台显式配置。仅为指定平台设置已授权的 Cookie 文件或浏览器来源，YouTube Adapter 不复用 B 站凭据。公开元数据、选定字幕或媒体，以及可选社区内容，可能发送到配置的模型 Provider。
+
+## 开发
+
+```bash
+npm run dev
+npm run typecheck
+npm test
+npm run build
+```
+
+离线测试不需要 Provider 凭据，也不访问真实视频平台。编译后的通用工具已实测 YouTube 字幕、YouTube 非零起点视觉区间，以及 B 站音频/ASR 回退。B 站结果为 `partial`，明确记录字幕访问限制和丢弃无效引用的告警。这些检查验证集成和引用结构，不代表模型准确率。具体结果与部署检查见[验证记录](./docs/validation.md)。
+
+完成 build 后，生产部署可以保留 `dist` 并运行 `npm ci --omit=dev`。`npm start` 和 `npm run doctor` 均运行编译后的 JavaScript，无需 `tsx`；外部媒体依赖和 Provider 配置仍需通过 doctor。
 
 ## 许可证
 
-[MIT](./LICENSE)
+[MIT](./LICENSE)，保留 BVR 来源与贡献历史。
