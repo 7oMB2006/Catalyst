@@ -2,7 +2,7 @@
 
 [简体中文](./README.zh-CN.md) · English
 
-Catalyst provides video research and Xiaohongshu image/text note research for existing agents, with explicit evidence sources, original image-page numbers or source-time ranges, availability states, and analysis limits.
+Catalyst provides Bilibili candidate discovery, video research and Xiaohongshu image/text note research for existing agents, with explicit evidence sources, original image-page numbers or source-time ranges, availability states, and analysis limits.
 
 Catalyst evolves from [Bilibili Video Research](https://github.com/7oMB2006/Bilibili-Video-Research), retaining its Git history and existing BVR tools. This is an early preview, installed from source.
 
@@ -10,13 +10,13 @@ Catalyst evolves from [Bilibili Video Research](https://github.com/7oMB2006/Bili
 
 | Source | Scope |
 | --- | --- |
-| Bilibili | Public video metadata, available captions or audio fallback, media research, and optional sampled comments. Access and source quality depend on the video and authorized account. |
+| Bilibili | Experimental candidate discovery, public video metadata, available captions or audio fallback, media research, and optional sampled comments. Access and source quality depend on the platform, video and authorized account. |
 | YouTube | Public video metadata, available manual or automatic JSON3 captions, and media research. Comment sampling reports `unsupported` in this preview. |
 | Xiaohongshu (experimental) | A dedicated note entry reads body text, per-page OCR and image content, routing confirmed videos to the existing video workflow. Accepts note/share URLs and copied share text. Platform captions and comments remain unsupported. |
 | Local files | Existing visual analysis and silent-window inspection tools. |
 | Douyin | Acquisition research candidate; no preview support claim. |
 
-Discovery, cross-platform search, and long-running task scheduling are later work. The host agent owns the overall task and conversation.
+Discovery starts with bounded Bilibili candidate search. Cross-platform search, automatic research loops, and long-running task scheduling are later work. The host agent owns query planning, candidate selection, and the overall conversation.
 
 ## Installation
 
@@ -66,6 +66,23 @@ npm start
 This starts the compiled stdio server. In an MCP host, use `node` as the command and the absolute path to `dist/index.js` as its argument. Set `DOTENV_CONFIG_PATH` to the absolute path to the local `.env` file when the host starts in a different directory. Configure the host's tool timeout to cover the requested research timeout and startup overhead.
 
 Provider credentials belong in the process environment or local `.env`, rather than the host's checked-in configuration. `CODEX_VIDEO_PROVIDER` remains the historical provider selector: `stepfun` by default, or `gemini`.
+
+## Discover Bilibili candidates
+
+```text
+discover_bilibili_videos({
+  question: "Which approaches reduce the computation required by self-attention?",
+  queries: ["高效注意力 Linformer", "稀疏注意力 原理"],
+  max_candidates: 10,
+  timeout_seconds: 30
+})
+```
+
+The tool returns search metadata and ranked source links, with the originating queries and original result positions. Candidates are marked `content_status: "not_read"` and `media_access: "not_checked"`; search snippets and ordering do not establish what a video contains or whether its media can be acquired. Results without an explicit part retain `part_number: null`; search durations have not been verified for a selected part.
+
+The host supplies up to three short queries. If omitted, the question itself is the single query; a question longer than 200 characters requires explicit short queries. Defaults are ten candidates and a 30-second shared deadline. Each query requests one page of up to twenty rows. The tool performs no model calls, ASR, media downloads, automatic retries or browser-cookie reads, and needs no model credential. Select a candidate and pass its URL to an existing research tool, which revalidates source and part identity before reading content.
+
+This is an experimental anonymous Bilibili Web search path, not a stable official API. Access restrictions can produce partial or unavailable results; blocking, authentication requirements and rate limits stop remaining queries. Every result declares `search_exhaustive: false`, and reports candidates omitted by the requested return limit. See the [discovery design, references and acceptance criteria](./docs/discovery.md).
 
 ## Research a video
 

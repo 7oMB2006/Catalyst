@@ -8,11 +8,17 @@ Catalyst 将平台获取与研究流程分开：平台 Adapter 提供统一素�
 
 `follow_up_long_video_research` 用父记录已完成概览的字幕／ASR 研究新问题，并创建独立子记录。相关性、焦点、报告与答案重新生成；多模态追问先做语言概览，再获取新的音画精读窗口。全部可复用原始文本在首次子记录检查点保存，恢复不依赖父记录。具体契约见[同一视频的连续追问](./long-video-followup.md)。
 
+`discover_bilibili_videos` 是研究前的独立候选发现入口。它在查询数、返回数、响应字节和共享期限内取得匿名搜索元数据，规范化来源身份并按实际查询排名融合排序；不取得媒体或生成内容证据。宿主规划检索词、选择候选，再调用现有研究入口。搜索命中不代表媒体可访问，稿件级结果也不等于已选定某个分 P。具体契约与联网设计参考见[B 站候选发现](./discovery.md)。
+
 ## 调用路径
 
 ```mermaid
 flowchart TD
   Host[宿主 Agent] --> MCP[MCP analyze_video_url]
+  Host --> Discovery[MCP discover_bilibili_videos]
+  Discovery --> Search[B 站匿名搜索元数据]
+  Search --> Candidates[DiscoveryResult 未读候选]
+  Candidates --> Host
   MCP --> Engine[ResearchEngine]
   Engine --> Route[平台路由]
   Route --> Bili[BilibiliAdapter]
@@ -33,6 +39,10 @@ flowchart TD
 | 模块 | 职责 |
 | --- | --- |
 | `src/contracts.ts` | 平台身份、能力、字幕、媒体、Evidence、Finding、失败和结果契约。 |
+| `src/discovery-contracts.ts` | 候选、查询执行、排名依据、发现预算与独立结果契约。 |
+| `src/discovery-schema.ts` | 发现工具的严格请求校验及独立结果 Schema。 |
+| `src/discovery.ts` | 有界查询执行、状态保留、身份去重、RRF 排序与候选返回上限。 |
+| `src/bilibili-search.ts` | 匿名搜索响应获取、字节限制、元数据规范化和访问错误识别。 |
 | `src/result-schema.ts` | 与 MCP 工具发现一同暴露的结果 Schema，校验结构和字段；不承担结论语义验证。 |
 | `src/process.ts` | 有期限和共享输出上限的子进程执行，以及取消时的进程组或进程树清理。 |
 | `src/adapters/` | 校验来源 URL，取得元数据与语言素材，按平台管理可选评论和认证范围。 |
@@ -49,6 +59,8 @@ flowchart TD
 | `src/doctor.ts` | 本机依赖版本与配置存在性诊断，不进行平台或模型请求。 |
 
 ## 统一素材
+
+候选发现返回 `DiscoveryResult`，与 `ResearchResult` 分开。候选中的标题、简介、作者和搜索时长用于来源筛选；`content_status` 固定为 `not_read`，`media_access` 固定为 `not_checked`，不进入 Evidence 或 Findings。查询命中记录保留原始排名，重复身份合并后仍可追溯至全部查询。RRF 分数是排序基线，不是事实可信度。候选送入研究工具后，才重新解析实际分 P、CID 和时长，并取得内容素材。
 
 `SourceContext` 包含视频身份、字幕轨、评论和独立的能力状态。`VideoIdentity` 保留平台内容 ID、分 P 身份、原始 URL 与规范 URL。B 站的页面身份和时间长度应与所下载媒体一致；YouTube 的链接形式归一化到具体视频。
 
@@ -102,6 +114,8 @@ flowchart TD
 
 B 站仅使用 `BILIBILI_COOKIES_*` 配置，YouTube 仅使用 `YOUTUBE_COOKIES_*`，小红书仅使用 `XIAOHONGSHU_COOKIES_*`。没有显式认证配置时不会自动选择浏览器登录态。B 站字幕 API 获取与 yt-dlp 的认证通道分别处理：配置给下载器的浏览器来源不会自动成为字幕 API 会话，因此可能出现媒体可获取而字幕为 `auth_required`，随后走显式 ASR 回退的情况。`.env` 或宿主环境向 Provider 注入凭据，doctor 只报告是否已配置。
 
+B 站候选发现单独使用匿名 Web 搜索路径，不读取上述下载器 Cookie 配置或浏览器登录态。首版每查询最多一页，不自动重试；HTTP 响应受 1 MiB 上限约束。阻断、认证要求或限流会停止剩余查询，普通单查询错误与成功候选一起保留。匿名路径可受平台限制，不能由一次返回成功宣称长期稳定。
+
 ## 兼容边界
 
-现有 `analyze_bilibili_video`、`analyze_video`、`inspect_video_window` 保留，原有 BVR 测试继续作为回归基线。通用入口的版本化结果与旧文本呈现分别维护。第一轮没有把跨平台搜索、长期调度或独立 Research Agent 纳入核心依赖。
+现有 `analyze_bilibili_video`、`analyze_video`、`inspect_video_window` 保留，原有 BVR 测试继续作为回归基线。通用研究结果、候选发现结果与旧文本呈现分别维护。B 站发现提供候选，跨平台搜索、长期调度和整体 Research Agent 编排仍由后续工作或宿主负责。

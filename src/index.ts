@@ -12,6 +12,8 @@ import { followUpLongVideoResearch, startLongVideoResearch, resumeLongVideoResea
 import { ResearchSessionStore } from "./research-session-store.js";
 import { longVideoResultShape } from "./long-video-schema.js";
 import { researchResultShape } from "./result-schema.js";
+import { discoverBilibiliVideos } from "./discovery.js";
+import { discoveryResultShape } from "./discovery-schema.js";
 
 const server = new McpServer({ name: "catalyst-video-research-mcp", version: "0.1.0-preview.1" });
 
@@ -38,6 +40,22 @@ const sourceQualitySchema = z.object({
   fps: z.union([z.literal(30), z.literal(60)]).optional().describe("Target source-video frame rate. Overrides the profile preset."),
   on_unavailable: z.enum(["error", "warn"]).default("error").describe("error refuses an unavailable target instead of silently downgrading; warn allows a reported fallback."),
 }).optional().describe("Optional source acquisition quality. It affects platform downloads, not local-video tools.");
+
+server.registerTool("discover_bilibili_videos", {
+  title: "Discover Bilibili Video Candidates",
+  description: "Find bounded video candidates for a research question from anonymous Bilibili search metadata. Supply up to three short queries planned by the host; otherwise the question itself is searched. Reads one page per query, merges duplicate identities and fuses ranks with RRF. Titles, snippets and ranks are untrusted metadata, not read source evidence. Media access is not checked; source and selected-part identity must be resolved by a research tool after selection. No downloads, ASR, models, automatic retries or browser sessions. Stops on platform blocks, authentication requirements or rate limits and retains earlier candidates.",
+  inputSchema: z.strictObject({
+    question: z.string().trim().min(3).max(2000).describe("Research question. When queries is omitted, the question must be a short search query of at most 200 characters."),
+    queries: z.array(z.string().trim().min(2).max(200)).min(1).max(3).optional().describe("One to three explicit search queries, such as a topic and alternative terminology. No model query rewriting is performed."),
+    max_candidates: z.number().int().min(1).max(20).default(10).describe("Maximum unique candidates returned; this is not a promise to fill the list or exhaust the search."),
+    timeout_seconds: z.number().min(1).max(120).default(30).describe("Shared deadline for all queries and response bodies."),
+  }),
+  outputSchema: discoveryResultShape,
+  annotations: { readOnlyHint: true, openWorldHint: true },
+}, async ({ question, queries, max_candidates, timeout_seconds }, extra) => {
+  const discovery = await discoverBilibiliVideos({ question, queries, maxCandidates: max_candidates, timeoutSeconds: timeout_seconds }, {}, extra.signal);
+  return { content: [{ type: "text" as const, text: JSON.stringify(discovery, null, 2) }], structuredContent: { ...discovery }, isError: discovery.status === "unavailable" };
+});
 
 server.registerTool("analyze_video", {
   title: "Analyze a Video Visually",
