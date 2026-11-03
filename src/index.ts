@@ -8,6 +8,8 @@ import { researchBilibiliVideo } from "./bilibili.js";
 import { researchXiaohongshuNote } from "./note-research.js";
 import { xiaohongshuResearchResultShape } from "./note-result-schema.js";
 import { researchVideo } from "./research.js";
+import { researchLongVideo } from "./long-video.js";
+import { longVideoResultShape } from "./long-video-schema.js";
 import { researchResultShape } from "./result-schema.js";
 
 const server = new McpServer({ name: "catalyst-video-research-mcp", version: "0.1.0-preview.1" });
@@ -157,6 +159,37 @@ server.registerTool("analyze_video_url", {
     structuredContent: { ...research },
     isError: research.status === "unavailable",
   };
+});
+
+server.registerTool("analyze_long_video_url", {
+  title: "Research a Long Video with Catalyst",
+  description: "Research a single selected Bilibili part, YouTube video or accessible Xiaohongshu video with bounded overview segments followed by closer detail windows. Use for videos longer than the standard tool's 900-second media limit. Acquires source windows, preserves original source times and part identity, and reports coarse overview, closer detail and unreviewed intervals separately. Language mode prefers available captions and otherwise transcribes windowed audio; vision removes audio; multimodal retains audio and video. Model focus offsets only propose detail clips, never verified event timestamps. No cross-request media cache or background continuation. Comments are not collected.",
+  inputSchema: {
+    url: z.string().min(1).max(8192),
+    question: z.string().min(3),
+    mode: z.enum(["language", "vision", "multimodal"]),
+    language: z.string().min(2).max(20).optional(),
+    source_quality: sourceQualitySchema,
+    start_seconds: z.number().min(0).optional().describe("Optional source interval; provide with end_seconds. Bilibili p selects one part, never the entire collection."),
+    end_seconds: z.number().positive().optional(),
+    segment_seconds: z.number().int().min(120).max(900).default(600),
+    max_segments: z.number().int().min(1).max(24).default(12).describe("Preflight budget: an overview needing more segments is rejected before media acquisition. No silent sampling of only the beginning."),
+    max_detail_windows: z.number().int().min(0).max(4).default(2),
+    detail_window_seconds: z.number().int().min(30).max(300).default(120),
+    max_download_mb: z.number().int().min(32).max(2048).default(512).describe("Cumulative retained acquired-file bytes, including repeated detail acquisitions. This is not a hard cap on network traffic."),
+    window_timeout_seconds: z.number().int().min(15).max(600).default(180).describe("Deadline for one overview or detail window, within the shared request deadline. A stalled window fails independently so later windows can still run."),
+    timeout_seconds: z.number().min(5).max(1800).default(900).describe("Shared deadline for all windows and synthesis. The host timeout must exceed this plus startup overhead. Completed segment reports survive cancellation or timeout."),
+  },
+  outputSchema: longVideoResultShape,
+  annotations: { readOnlyHint: true },
+}, async ({ url, question, mode, language, source_quality, start_seconds, end_seconds, segment_seconds, max_segments, max_detail_windows, detail_window_seconds, max_download_mb, window_timeout_seconds, timeout_seconds }, extra) => {
+  const research = await researchLongVideo({
+    url, question, mode, language, startSeconds: start_seconds, endSeconds: end_seconds,
+    segmentSeconds: segment_seconds, maxSegments: max_segments, maxDetailWindows: max_detail_windows,
+    detailWindowSeconds: detail_window_seconds, maxDownloadMB: max_download_mb, windowTimeoutSeconds: window_timeout_seconds, timeoutSeconds: timeout_seconds,
+    sourceQuality: source_quality ? { profile: source_quality.profile, resolution: source_quality.resolution, fps: source_quality.fps, onUnavailable: source_quality.on_unavailable } : undefined,
+  }, undefined, extra.signal);
+  return { content: [{ type: "text" as const, text: JSON.stringify(research, null, 2) }], structuredContent: { ...research }, isError: research.status === "unavailable" };
 });
 
 server.registerTool("analyze_xiaohongshu_note", {

@@ -90,6 +90,23 @@ analyze_video_url({
 
 Provide `start_seconds` and `end_seconds` together. For media longer than 900 seconds, the generic tool requires an explicit window of at most 900 seconds; otherwise it returns `WINDOW_REQUIRED`. Caption-only language research is not subject to this media-upload limit. The legacy BVR entry retains its coarse/detail pass for long visual videos. `language` can select a preferred caption/ASR language. Actual capabilities and failures are reported for each source; an unavailable comment path does not establish that video research failed.
 
+For long lectures, courses, and interviews, use `analyze_long_video_url`. It plans every overview window in the selected source interval, then takes closer looks at relevant clips. Overview, detail, and unreviewed intervals are reported separately:
+
+```text
+analyze_long_video_url({
+  url: "https://www.bilibili.com/video/BV1DTxXzUEvW/?p=17",
+  question: "Which self-attention mechanisms does this lesson introduce, and what does each address?",
+  mode: "multimodal",
+  language: "en",
+  segment_seconds: 600,
+  max_segments: 12,
+  max_detail_windows: 2,
+  timeout_seconds: 1800
+})
+```
+
+Overview media is prepared at up to 360p/1fps, and detail media at up to 720p/5fps. Complete overview coverage does not establish that every frame or formula was read. Defaults are a 512 MiB cumulative acquired-file budget, a 32 MiB prepared upload limit, and a 900-second shared deadline (configurable up to 1,800 seconds; the host timeout must be longer). Budget or deadline failures retain partial reports. Media is acquired by source window; cross-request caching is not implemented. See the [long-video design and acceptance record](./docs/long-video.md).
+
 The new tool uses an available source by default, recording its actual quality. Visual and multimodal acquisition prefer formats at or below 1080p; inspect the reported dimensions when a source fallback is used. The default media-file budget is 256 MiB, configurable through `CATALYST_MAX_MEDIA_MB`. Acquisition can download the entire source before cutting the requested interval, and this preview has no cross-request media or transcription cache. To impose a quality threshold, supply `source_quality`, for example:
 
 ```text

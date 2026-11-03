@@ -2,9 +2,9 @@ import { promises as fs } from "node:fs";
 import path from "node:path";
 import { analyzeMediaWithProvider, analyzeTextWithProvider, createAudioTrack, createVideoWindow, createSilentVideo, createSilentWindow, getConfiguredVideoProvider, getFfmpegPath, removeTemporaryWindow, type MediaDetail } from "./video-analysis.js";
 import { assessDownloadedQuality, parseYtDlpMetadata, resolveSourceQuality, selectYtDlpFormat, type ResolvedSourceQuality, type SourceQualityReport, type SourceQualityRequest } from "./media-quality.js";
-import { inspectDownloader } from "./acquisition.js";
+import { AcquisitionError, inspectDownloader } from "./acquisition.js";
 import { runProcess as execFile } from "./process.js";
-import type { Captions } from "./contracts.js";
+import type { Captions, ExecutionContext } from "./contracts.js";
 
 
 const MAX_COMMENT_POOL = 20;
@@ -22,6 +22,7 @@ interface BilibiliVideo {
   aid: number;
   cid: number;
   title: string;
+  partTitle?: string;
   description: string;
   owner: { name: string; mid: number };
   publishedAt: number;
@@ -125,6 +126,38 @@ async function fetchJson<T>(url: string, signal?: AbortSignal): Promise<T> {
   return response.json() as Promise<T>;
 }
 
+const BILIBILI_HOSTS = ["bilibili.com", "www.bilibili.com", "m.bilibili.com", "b23.tv", "www.b23.tv"];
+
+export async function resolveBilibiliUrl(input: string, context: ExecutionContext): Promise<{ bvid: string; page: number; canonicalUrl: string }> {
+  let url = new URL(input);
+  for (let redirect = 0; redirect < 5; redirect += 1) {
+    if (!BILIBILI_HOSTS.includes(url.hostname.toLowerCase()) || !["http:", "https:"].includes(url.protocol) || url.username || url.password || (url.port && !["80", "443"].includes(url.port))) {
+      throw new AcquisitionError("INVALID_URL", "Bilibili redirects must remain on supported public Bilibili hosts.");
+    }
+    url.protocol = "https:";
+    if (!url.hostname.endsWith("b23.tv")) {
+      const bvid = url.pathname.match(/^\/video\/(BV[0-9A-Za-z]{10})(?:\/|$)/i)?.[1];
+      if (!bvid) throw new AcquisitionError("INVALID_URL", "A Bilibili BV video link is required; profiles, playlists and live streams are unsupported.");
+      const rawPage = url.searchParams.get("p") ?? "1";
+      const page = Number(rawPage);
+      if (!/^\d+$/.test(rawPage) || !Number.isSafeInteger(page) || page < 1) throw new AcquisitionError("INVALID_URL", "Bilibili p must be a positive part number.");
+      return { bvid, page, canonicalUrl: `https://www.bilibili.com/video/${bvid}/${page === 1 ? "" : `?p=${page}`}` };
+    }
+    context.signal.throwIfAborted();
+    const response = await fetch(url, { redirect: "manual", signal: context.signal, headers: { "User-Agent": "Catalyst/0.1" } });
+    const location = response.headers.get("location");
+    if (response.status >= 300 && response.status < 400 && location) {
+      await response.body?.cancel();
+      url = new URL(location, url);
+      continue;
+    }
+    await response.body?.cancel();
+    throw new AcquisitionError("RESOLUTION_FAILED", `Bilibili share link did not resolve to a video (HTTP ${response.status}).`, true);
+  }
+  throw new AcquisitionError("RESOLUTION_FAILED", "Bilibili share link exceeded the redirect limit.");
+}
+
+
 export async function resolveBvid(url: string): Promise<string> {
   const direct = url.match(/BV[0-9A-Za-z]{10}/i)?.[0];
   if (direct) return direct;
@@ -141,11 +174,15 @@ export async function getVideo(bvid: string, page = 1, signal?: AbortSignal): Pr
   const pages = data.pages as Array<{ cid?: number; duration?: number; part?: string }> | undefined;
   if (!Number.isInteger(page) || page < 1 || (pages?.length ? page > pages.length : page !== 1)) throw new Error("The requested Bilibili part does not exist.");
   const selectedPart = pages?.[page - 1];
+  if (pages?.length && (!selectedPart || typeof selectedPart.cid !== "number" || !Number.isFinite(selectedPart.cid) || selectedPart.cid <= 0 || typeof selectedPart.duration !== "number" || !Number.isFinite(selectedPart.duration) || selectedPart.duration <= 0)) {
+    throw new Error("Bilibili did not return a valid identity and duration for the selected part.");
+  }
   return {
     bvid,
     aid: Number(data.aid),
     cid: Number(selectedPart?.cid ?? data.cid),
     title: String(data.title ?? ""),
+    ...(typeof selectedPart?.part === "string" && selectedPart.part.trim() ? { partTitle: selectedPart.part.trim() } : {}),
     description: String(data.desc ?? ""),
     owner: { name: String((data.owner as Record<string, unknown> | undefined)?.name ?? ""), mid: Number((data.owner as Record<string, unknown> | undefined)?.mid) },
     publishedAt: Number(data.pubdate),
@@ -306,6 +343,7 @@ function formatContext(video: BilibiliVideo, tagContext: TagContext, comments: C
     status: "present",
     bvid: video.bvid,
     title: video.title,
+    ...(video.partTitle ? { part_title: video.partTitle } : {}),
     uploader: { name: video.owner.name, uid: Number.isFinite(video.owner.mid) ? video.owner.mid : null },
     published_at_unix: Number.isFinite(video.publishedAt) ? video.publishedAt : null,
     published_at_iso: publishedAt,
@@ -552,8 +590,10 @@ async function downloadVideo(url: string, directory: string, quality: ResolvedSo
 }
 
 export async function researchBilibiliVideo(request: BilibiliResearchRequest): Promise<string> {
-  const bvid = await resolveBvid(request.url);
-  const video = await getVideo(bvid);
+  const identity = await resolveBilibiliUrl(request.url, { signal: AbortSignal.timeout(30_000), deadlineMs: Date.now() + 30_000 });
+  const bvid = identity.bvid;
+  const video = await getVideo(bvid, identity.page);
+  request = { ...request, url: identity.canonicalUrl };
   const sourceQuality = resolveSourceQuality(request.sourceQuality);
   let downloadedQuality: SourceQualityReport | undefined;
   const startSeconds = request.startSeconds;
