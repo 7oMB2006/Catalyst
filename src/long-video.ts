@@ -220,8 +220,14 @@ export async function researchLongVideo(request: LongVideoRequest, overrides: Pa
         const text = [instructions(request), `PHASE: ${segment.phase}. Source interval: ${JSON.stringify(segment.window)}. Supplied clip local time zero maps to source start_seconds.`, segment.phase === "overview" ? "Give a concise overview of this entire input window, relevant concepts and limits. Set relevance_score from 0 to 3. Propose focus_offset_seconds within this clip for a later closer look; this is only a navigation proposal, never verified timing." : "Inspect the supplied detail window closely for the research question. Distinguish readable slide/formula evidence from explanation. Do not fill unreadable content using general knowledge.", request.mode === "multimodal" ? "Use the supplied ASR evidence as the language channel even if the video endpoint does not expose its audio to you. Distinguish ASR text from what is visible; do not claim to have independently verified every spoken word." : "", `VALID evidence_ids: ${JSON.stringify(primary.map((evidence) => evidence.id))}. For example, use ${JSON.stringify({ statement: "A directly supported observation", evidence_ids: [primary[0].id], limitations: ["Model interpretation"] })}. Never invent shorter or alternate evidence IDs.`, "PRIMARY EVIDENCE:", JSON.stringify(primary)].join("\n\n");
         const raw = await run(`${segment.phase}_analysis`, () => prepared ? deps.analyzeMedia(prepared.path, text, segment.phase === "overview" ? "low" : "default", context, request.language) : deps.analyzeText(text, context, request.language));
         const parsed = { evidence: primary, findings: [], analysis: null, warnings: [] } as Pick<LongVideoResult, "evidence" | "findings" | "analysis" | "warnings">;
-        const valid = collectFindings(raw, parsed); segment.analysis = parsed.analysis?.slice(0, 12_000) ?? null;
-        segment.status = valid ? "complete" : "partial";
+        const valid = collectFindings(raw, parsed);
+        let report = parsed.analysis?.trim();
+        if (valid && !report) {
+          report = parsed.findings.map((finding) => `[${finding.evidence_ids.join(", ")}] ${finding.statement}\nLimitations: ${finding.limitations.join("; ")}`).join("\n\n");
+          parsed.warnings.push("Provider returned an empty analysis; the segment report was constructed from accepted findings and their citations.");
+        }
+        segment.analysis = report?.slice(0, 12_000) || null;
+        segment.status = valid && !!segment.analysis?.trim() ? "complete" : "partial";
         result.warnings.push(...parsed.warnings.map((warning) => `${segment.id}: ${warning}`));
         try {
           const data = JSON.parse(raw.trim().replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/, ""));

@@ -18,12 +18,13 @@ export interface ResumeResearchOptions {
 }
 
 /** Compatibility identifies processing semantics, never a credential or signed source URL. */
-export function sessionCompatibility(): string {
+export function sessionCompatibility(request?: Pick<LongVideoRequest, "language">): string {
   const provider = getConfiguredVideoProvider();
   return createHash("sha256").update(JSON.stringify({
     engine: "long-video-session-v1", provider,
     model: provider === "stepfun" ? process.env.STEPFUN_VIDEO_MODEL ?? "step-3.7-flash" : process.env.GEMINI_VIDEO_MODEL ?? "gemini-2.5-flash",
     asr: provider === "stepfun" ? process.env.STEPFUN_ASR_MODEL ?? "stepaudio-2.5-asr" : process.env.GEMINI_VIDEO_MODEL ?? "gemini-2.5-flash",
+    asrLanguage: provider === "stepfun" ? request?.language ?? process.env.STEPFUN_ASR_LANGUAGE ?? "zh" : request?.language ?? null,
     endpoint: provider === "stepfun" ? (process.env.STEPFUN_BASE_URL?.trim() || "https://api.stepfun.com/v1").replace(/\/+$/, "") : "https://generativelanguage.googleapis.com",
   })).digest("hex");
 }
@@ -58,7 +59,7 @@ async function execute(request: LongVideoRequest, options: SessionExecutionOptio
   return store.withLock(id, async () => {
     // Load under the operation lock so concurrent resumes cannot use a stale revision.
     const current = saved ? await store.load(id) : undefined;
-    if (current && current.compatibility !== sessionCompatibility()) throw new ResearchSessionError("SESSION_INCOMPATIBLE", "The configured provider, model, ASR or engine changed. Start a new research session.");
+    if (current && current.compatibility !== sessionCompatibility(current.request)) throw new ResearchSessionError("SESSION_INCOMPATIBLE", "The configured provider, model, ASR settings or engine changed. Start a new research session.");
     if (current) request = { ...current.request, ...request, url: request.url || current.request.url };
     let revision = current?.revision ?? 0;
     const created = current?.created_at ?? new Date().toISOString();
@@ -73,7 +74,7 @@ async function execute(request: LongVideoRequest, options: SessionExecutionOptio
           reused_segments: completed.size,
           processed_segments: result.segments.filter((s) => !completed.has(s.id) && s.status !== "pending").length };
         const snapshot = sanitizeSessionResult({ ...result, session: info });
-        const record: ResearchSessionRecord = { schema_version: "1", id, revision: revision + 1, created_at: created, updated_at: updated, compatibility: sessionCompatibility(), request: snapshot.request as LongVideoRequest, result: snapshot };
+        const record: ResearchSessionRecord = { schema_version: "1", id, revision: revision + 1, created_at: created, updated_at: updated, compatibility: sessionCompatibility(request), request: snapshot.request as LongVideoRequest, result: snapshot };
         await store.save(record, revision || null);
         revision++; result.session = info; lastSaved = info;
       },

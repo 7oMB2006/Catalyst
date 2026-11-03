@@ -177,6 +177,82 @@ test("a changed provider model refuses continuation before acquisition and prese
   }
 }));
 
+test("changing the effective default ASR language rejects resume before source or model calls", async () => temporary(async (directory, store) => {
+  const oldProvider = process.env.CODEX_VIDEO_PROVIDER, oldLanguage = process.env.STEPFUN_ASR_LANGUAGE;
+  process.env.CODEX_VIDEO_PROVIDER = "stepfun"; process.env.STEPFUN_ASR_LANGUAGE = "zh";
+  try {
+    const request = { ...REQUEST, language: undefined }, first = fixture(source(1200));
+    const analyze = first.deps.analyzeMedia;
+    first.deps.analyzeMedia = async (...args) => {
+      const raw = await analyze(...args);
+      if (evidenceIn(args[1])[0].id === "overview:2:source") throw Object.assign(new Error("Fixture interruption"), { code: "UPSTREAM_ERROR" });
+      return raw;
+    };
+    const result = await startLongVideoResearch(request, { store, dependencies: first.deps }), id = idOf(result);
+    assert.equal(result.status, "partial");
+    assert.deepEqual(result.segments.map((segment) => segment.status), ["complete", "failed"]);
+    const raw = await rawRecord(directory, id), compatibility = (await store.load(id)).compatibility;
+    assert.equal(compatibility, sessionCompatibility(request));
+    process.env.STEPFUN_ASR_LANGUAGE = "en";
+    assert.notEqual(sessionCompatibility(request), compatibility);
+    const next = fixture(source(1200));
+    await assert.rejects(resumeLongVideoResearch(id, {}, { store: new ResearchSessionStore(directory), dependencies: next.deps }), hasCode("SESSION_INCOMPATIBLE"));
+    assert.deepEqual(next.calls.resolves, []); assert.deepEqual(next.calls.acquired, []); assert.deepEqual(next.calls.transcribed, []);
+    assert.deepEqual(next.calls.media, []); assert.deepEqual(next.calls.text, []);
+    assert.equal(await rawRecord(directory, id), raw);
+  } finally {
+    if (oldProvider === undefined) delete process.env.CODEX_VIDEO_PROVIDER; else process.env.CODEX_VIDEO_PROVIDER = oldProvider;
+    if (oldLanguage === undefined) delete process.env.STEPFUN_ASR_LANGUAGE; else process.env.STEPFUN_ASR_LANGUAGE = oldLanguage;
+  }
+}));
+
+test("an explicit research language overrides a changed ASR fallback when continuing unfinished windows", async () => temporary(async (directory, store) => {
+  const oldProvider = process.env.CODEX_VIDEO_PROVIDER, oldLanguage = process.env.STEPFUN_ASR_LANGUAGE;
+  process.env.CODEX_VIDEO_PROVIDER = "stepfun"; process.env.STEPFUN_ASR_LANGUAGE = "zh";
+  try {
+    const request = { ...REQUEST, language: "en" }, first = fixture(source(1200));
+    const analyze = first.deps.analyzeMedia;
+    first.deps.analyzeMedia = async (...args) => {
+      const raw = await analyze(...args);
+      if (evidenceIn(args[1])[0].id === "overview:2:source") throw Object.assign(new Error("Fixture interruption"), { code: "UPSTREAM_ERROR" });
+      return raw;
+    };
+    const result = await startLongVideoResearch(request, { store, dependencies: first.deps }), id = idOf(result);
+    assert.equal(result.status, "partial");
+    const compatibility = (await store.load(id)).compatibility;
+    assert.equal(compatibility, sessionCompatibility(request));
+    process.env.STEPFUN_ASR_LANGUAGE = "ja";
+    assert.equal(sessionCompatibility(request), compatibility);
+    const next = fixture(source(1200), "explicit-language-resume"), transcribe = next.deps.transcribe;
+    next.deps.transcribe = async (...args) => { assert.equal(args[2], "en"); return transcribe(...args); };
+    const resumed = await resumeLongVideoResearch(id, {}, { store: new ResearchSessionStore(directory), dependencies: next.deps });
+    assert.equal(resumed.status, "complete");
+    assert.deepEqual(next.calls.acquired, [[600, 1200]]); assert.equal(next.calls.transcribed.length, 1); assert.equal(next.calls.media.length, 1);
+    assert.equal(resumed.session?.reused_segments, 1); assert.equal(resumed.session?.processed_segments, 1);
+    assert.equal((await store.load(id)).compatibility, compatibility);
+  } finally {
+    if (oldProvider === undefined) delete process.env.CODEX_VIDEO_PROVIDER; else process.env.CODEX_VIDEO_PROVIDER = oldProvider;
+    if (oldLanguage === undefined) delete process.env.STEPFUN_ASR_LANGUAGE; else process.env.STEPFUN_ASR_LANGUAGE = oldLanguage;
+  }
+}));
+
+test("compatibility normalizes StepFun's default language and ignores its unused fallback for Gemini", () => {
+  const oldProvider = process.env.CODEX_VIDEO_PROVIDER, oldLanguage = process.env.STEPFUN_ASR_LANGUAGE;
+  try {
+    process.env.CODEX_VIDEO_PROVIDER = "stepfun"; delete process.env.STEPFUN_ASR_LANGUAGE;
+    const defaultCompatibility = sessionCompatibility();
+    process.env.STEPFUN_ASR_LANGUAGE = "zh";
+    assert.equal(sessionCompatibility(), defaultCompatibility);
+    process.env.CODEX_VIDEO_PROVIDER = "gemini";
+    const geminiCompatibility = sessionCompatibility();
+    process.env.STEPFUN_ASR_LANGUAGE = "en";
+    assert.equal(sessionCompatibility(), geminiCompatibility);
+  } finally {
+    if (oldProvider === undefined) delete process.env.CODEX_VIDEO_PROVIDER; else process.env.CODEX_VIDEO_PROVIDER = oldProvider;
+    if (oldLanguage === undefined) delete process.env.STEPFUN_ASR_LANGUAGE; else process.env.STEPFUN_ASR_LANGUAGE = oldLanguage;
+  }
+});
+
 test("a fresh Xiaohongshu access token is used for acquisition without changing or persisting source identity", async () => temporary(async (directory, store) => {
   const canonical = "https://www.xiaohongshu.com/explore/6aaaa3300000000025035966";
   const original = `${canonical}?xsec_token=original-private-access`, refreshed = `${canonical}?xsec_token=refreshed-private-access`;

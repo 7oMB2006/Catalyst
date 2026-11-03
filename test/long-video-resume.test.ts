@@ -107,6 +107,35 @@ test("resume reacquires only a failed overview and merges its replacement eviden
   assertReferences(result); assertDisposed(next.calls);
 });
 
+test("empty or whitespace provider analysis produces a resumable report from accepted findings", async (t) => {
+  for (const analysis of ["", " \n\t "]) await t.test(JSON.stringify(analysis), async () => {
+    const first = fixture(), controller = new AbortController();
+    const analyze = first.deps.analyzeMedia;
+    first.deps.analyzeMedia = async (...args) => JSON.stringify({ ...JSON.parse(await analyze(...args)), analysis });
+    let saved: LongVideoResult | undefined;
+    await researchLongVideo(REQUEST, first.deps, controller.signal, {
+      onCheckpoint: async (result) => {
+        if (!saved && result.segments[0]?.status === "complete") {
+          saved = structuredClone(result);
+          controller.abort(new DOMException("Stop after the first durable report", "AbortError"));
+        }
+      },
+    });
+    assert.ok(saved, "accepted findings must produce a usable completed report");
+    assert.match(saved.segments[0].analysis ?? "", /Supported concept in overview:1:source/);
+    assert.match(saved.segments[0].analysis ?? "", /overview:1:source/);
+    assert.match(saved.segments[0].analysis ?? "", /Fixture interpretation/);
+    assert.deepEqual(acquiredWindows(first.calls), [[0, 600]]);
+    const next = fixture(source(), "continued");
+    const result = await researchLongVideo(REQUEST, next.deps, undefined, { previous: saved });
+    assert.equal(result.status, "complete");
+    assert.deepEqual(acquiredWindows(next.calls), [[600, 1200], [1200, 1800]]);
+    assert.equal(next.calls.transcriptions.length, 2); assert.equal(next.calls.media.length, 2);
+    assert.equal(result.segments[0].analysis, saved.segments[0].analysis);
+    assertReferences(result); assertDisposed(first.calls); assertDisposed(next.calls);
+  });
+});
+
 test("an interpreted but structurally partial overview is retried rather than treated as successful coverage", async () => {
   const first = fixture(source(1200));
   const analyze = first.deps.analyzeMedia;
