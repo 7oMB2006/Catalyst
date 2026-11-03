@@ -123,9 +123,27 @@ Completed overview and detail segments retain their reports, captions/ASR, and c
 
 Use `list_research_sessions` to find records, `get_research_session({ session_id })` to inspect one, and `delete_research_session({ session_id })` to remove one. Records live in `~/.catalyst/sessions`, or the directory set by `CATALYST_SESSION_DIR`. They contain sanitized results and progress, without media files, credentials, or signed acquisition URLs. Set `save_session: false` on the original long-video call for an unsaved run.
 
-Resume keeps the original question, selected source/part, mode, language, quality, and window plan. Only runtime deadlines and the acquired-file budget may change. An optional `url` can supply a fresh original share link when access requires it; the resolved source must still match, and access parameters are not saved. Asking a new question requires a new research call. There is no automatic background continuation. See [research-session storage and acceptance criteria](./docs/research-sessions.md).
+Resume keeps the original question, selected source/part, mode, language, quality, and window plan. Only runtime deadlines and the acquired-file budget may change. An optional `url` can supply a fresh original share link when access requires it; the resolved source must still match, and access parameters are not saved. There is no automatic background continuation. See [research-session storage and acceptance criteria](./docs/research-sessions.md).
 
-The generic video tool uses an available source by default, recording its actual quality. Visual and multimodal acquisition prefer formats at or below 1080p; inspect the reported dimensions when a source fallback is used. The default media-file budget is 256 MiB, configurable through `CATALYST_MAX_MEDIA_MB`. Generic acquisition can download the entire source before cutting the requested interval. There is no shared media or transcription cache across independent research calls; saved long-video sessions reuse their own completed segments. To impose a quality threshold, supply `source_quality`, for example:
+### Ask another question about the same video
+
+Create a separate research record from a saved session's completed overview captions or ASR:
+
+```text
+follow_up_long_video_research({
+  session_id: "<session.id from the original result>",
+  question: "How do the two attention mechanisms in this lecture differ?",
+  mode: "language"
+})
+```
+
+The follow-up reuses source text, then reassesses relevance and produces new reports and an answer. It retains the parent record. Language follow-ups perform no media acquisition or ASR, but still call the text model. Missing source text remains an explicit gap.
+
+Use `mode: "multimodal"` to select new detail windows from the language analysis and inspect their actual audio/video. Overview coverage remains language-only; detail windows incur new acquisition, ASR, and media analysis. Language mode requires `max_detail_windows: 0` (the default); multimodal mode accepts `1–4` (default `2`). The source interval, overview plan, language, and quality are inherited. Configuration and source identity must remain compatible.
+
+The new `session.id` can be read, resumed, or deleted independently. `follow_up` identifies the parent revision and copied language evidence. On the first follow-up call, `session.reused_segments` is `0` because all question-specific reports are new. See the [follow-up design and acceptance criteria](./docs/long-video-followup.md).
+
+The generic video tool uses an available source by default, recording its actual quality. Visual and multimodal acquisition prefer formats at or below 1080p; inspect the reported dimensions when a source fallback is used. The default media-file budget is 256 MiB, configurable through `CATALYST_MAX_MEDIA_MB`. Generic acquisition can download the entire source before cutting the requested interval. Independent research calls have no shared media or transcription cache; saved long-video sessions support explicit resume and follow-up reuse as described above. To impose a quality threshold, supply `source_quality`, for example:
 
 ```text
 source_quality: { profile: "high", on_unavailable: "error" }

@@ -27,6 +27,9 @@ export interface ResearchSessionSummary {
   created_at: string;
   updated_at: string;
   title: string | null;
+  question: string;
+  parent_session_id?: string;
+  parent_revision?: number;
   status: "complete" | "partial" | "unavailable";
   overview_complete: boolean;
   completed_segments: number;
@@ -72,6 +75,7 @@ function parseRecord(input: unknown, id?: string): ResearchSessionRecord {
   if (!parsed.success || (id !== undefined && parsed.data.id !== id)) throw new ResearchSessionError("SESSION_CORRUPT", "The research session has an invalid or unsupported record format.");
   const record = parsed.data as ResearchSessionRecord;
   const metadata = record.result.session;
+  if (record.result.follow_up?.parent_session_id === record.id) throw new ResearchSessionError("SESSION_CORRUPT", "A follow-up cannot name itself as its parent.");
   if (metadata && (metadata.id !== record.id || metadata.revision !== record.revision || metadata.created_at !== record.created_at || metadata.updated_at !== record.updated_at)) {
     throw new ResearchSessionError("SESSION_CORRUPT", "The research session metadata does not match its record.");
   }
@@ -219,7 +223,9 @@ export class ResearchSessionStore {
         if (error instanceof ResearchSessionError && ["SESSION_CORRUPT", "SESSION_TOO_LARGE", "SESSION_NOT_FOUND"].includes(error.code)) continue;
         throw error;
       }
-      output.push({ id: record.id, revision: record.revision, created_at: record.created_at, updated_at: record.updated_at, title: record.result.video?.title ?? null, status: record.result.status, overview_complete: record.result.coverage.overview_complete, completed_segments: record.result.segments.filter((segment) => segment.status === "complete").length, total_segments: record.result.segments.length });
+      output.push({ id: record.id, revision: record.revision, created_at: record.created_at, updated_at: record.updated_at, title: record.result.video?.title ?? null,
+        question: record.request.question, ...(record.result.follow_up ? { parent_session_id: record.result.follow_up.parent_session_id, parent_revision: record.result.follow_up.parent_revision } : {}),
+        status: record.result.status, overview_complete: record.result.coverage.overview_complete, completed_segments: record.result.segments.filter((segment) => segment.status === "complete").length, total_segments: record.result.segments.length });
     }
     return output.sort((a, b) => b.updated_at.localeCompare(a.updated_at) || a.id.localeCompare(b.id));
   }

@@ -45,7 +45,7 @@ test("local snapshots survive a new store instance and preserve transcripts, sel
   await store.withLock(saved.id, () => store.save(saved, null));
   const restarted = new ResearchSessionStore(directory);
   assert.deepEqual(await restarted.load(saved.id), saved);
-  assert.deepEqual(await restarted.list(), [{ id: saved.id, revision: 1, created_at: saved.created_at, updated_at: saved.updated_at, title: "Selected part17", status: "partial", overview_complete: false, completed_segments: 1, total_segments: 2 }]);
+  assert.deepEqual(await restarted.list(), [{ id: saved.id, revision: 1, created_at: saved.created_at, updated_at: saved.updated_at, title: "Selected part17", question: saved.request.question, status: "partial", overview_complete: false, completed_segments: 1, total_segments: 2 }]);
   assert.deepEqual(await fs.readdir(directory), [`${saved.id}.json`]);
   if (process.platform !== "win32") {
     assert.equal((await fs.stat(directory)).mode & 0o777, 0o700);
@@ -79,7 +79,7 @@ test("missing, traversal and non-UUID identifiers cannot address arbitrary files
 
 test("invalid JSON, request types, schema versions and mismatching metadata are rejected without partial loading", async () => temporary(async (directory, store) => {
   const base = record(store), path = join(directory, `${base.id}.json`);
-  const invalid = ["{broken", JSON.stringify({ ...base, schema_version: "2" }), JSON.stringify({ ...base, request: { ...base.request, mode: "ignore-mode" } }), JSON.stringify({ ...base, id: store.newId() }), JSON.stringify({ ...base, result: { ...base.result, session: { ...base.result.session, revision: 99 } } })];
+  const invalid = ["{broken", JSON.stringify({ ...base, schema_version: "2" }), JSON.stringify({ ...base, request: { ...base.request, mode: "ignore-mode" } }), JSON.stringify({ ...base, id: store.newId() }), JSON.stringify({ ...base, result: { ...base.result, session: { ...base.result.session, revision: 99 } } }), JSON.stringify({ ...base, result: { ...base.result, follow_up: { parent_session_id: base.id, parent_revision: 1, reused_evidence_ids: [] } } })];
   for (const content of invalid) {
     await fs.writeFile(path, content);
     await assert.rejects(store.load(base.id), hasCode("SESSION_CORRUPT"));

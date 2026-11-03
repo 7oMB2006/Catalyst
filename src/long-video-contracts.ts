@@ -22,6 +22,12 @@ export interface LongVideoSegment {
   error?: string;
 }
 export interface LongVideoResult extends ResearchResult {
+  /** New-question lineage; IDs name raw caption/ASR evidence copied into this independent result. */
+  follow_up?: {
+    parent_session_id: string;
+    parent_revision: number;
+    reused_evidence_ids: string[];
+  };
   session?: null | {
     id: string;
     revision: number;
@@ -51,6 +57,12 @@ export interface LongVideoResult extends ResearchResult {
 }
 export interface LongVideoContinuation {
   previous?: LongVideoResult;
+  /** Reuse source language material, never the parent's question-specific reports or focus. */
+  materialReuse?: {
+    result: LongVideoResult;
+    parentSessionId: string;
+    parentRevision: number;
+  };
   /** Called after planning, each window, the detail plan, and finalization, including cancellation. */
   onCheckpoint?: (result: LongVideoResult) => Promise<void>;
 }
