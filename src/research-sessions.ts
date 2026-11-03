@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
-import type { LongVideoDependencies, LongVideoRequest, LongVideoResult } from "./long-video-contracts.js";
+import { z } from "zod";
+import type { LongVideoContinuation, LongVideoDependencies, LongVideoRequest, LongVideoResult } from "./long-video-contracts.js";
 import { researchLongVideo } from "./long-video.js";
 import { ResearchSessionError, ResearchSessionStore, type ResearchSessionRecord } from "./research-session-store.js";
 import { getConfiguredVideoProvider, redactSensitiveText } from "./video-analysis.js";
@@ -16,6 +17,23 @@ export interface ResumeResearchOptions {
   windowTimeoutSeconds?: number;
   maxDownloadMB?: number;
 }
+export interface FollowUpResearchOptions extends ResumeResearchOptions {
+  question: string;
+  mode?: "language" | "multimodal";
+  maxDetailWindows?: number;
+  detailWindowSeconds?: number;
+}
+
+const followUpSchema = z.strictObject({
+  question: z.string().trim().min(3), mode: z.enum(["language", "multimodal"]).default("language"),
+  url: z.string().min(1).max(8192).optional(),
+  timeoutSeconds: z.number().min(5).max(1800).optional(),
+  windowTimeoutSeconds: z.number().int().min(15).max(600).optional(),
+  maxDownloadMB: z.number().int().min(32).max(2048).optional(),
+  maxDetailWindows: z.number().int().min(0).max(4).optional(),
+  detailWindowSeconds: z.number().int().min(30).max(300).optional(),
+}).refine((value) => value.mode === "language" ? (value.maxDetailWindows ?? 0) === 0 : (value.maxDetailWindows ?? 2) >= 1,
+  { message: "Language follow-ups require maxDetailWindows=0; multimodal follow-ups require 1 to 4 detail windows." });
 
 /** Compatibility identifies processing semantics, never a credential or signed source URL. */
 export function sessionCompatibility(request?: Pick<LongVideoRequest, "language">): string {
@@ -53,8 +71,8 @@ function redactSecrets(value: string): string {
   return value;
 }
 
-async function execute(request: LongVideoRequest, options: SessionExecutionOptions, saved?: ResearchSessionRecord): Promise<LongVideoResult> {
-  if (options.saveSession === false && !saved) return researchLongVideo(request, options.dependencies, options.signal);
+async function execute(request: LongVideoRequest, options: SessionExecutionOptions, saved?: ResearchSessionRecord, materialReuse?: LongVideoContinuation["materialReuse"]): Promise<LongVideoResult> {
+  if (options.saveSession === false && !saved) return researchLongVideo(request, options.dependencies, options.signal, { materialReuse });
   const store = options.store ?? new ResearchSessionStore(), id = saved?.id ?? store.newId();
   return store.withLock(id, async () => {
     // Load under the operation lock so concurrent resumes cannot use a stale revision.
@@ -67,6 +85,7 @@ async function execute(request: LongVideoRequest, options: SessionExecutionOptio
     let lastSaved: LongVideoResult["session"] = current?.result.session ?? null;
     const research = await researchLongVideo(request, options.dependencies, options.signal, {
       previous: current?.result,
+      materialReuse,
       onCheckpoint: async (result) => {
         if (!result.video || !result.plan) return;
         const updated = new Date().toISOString();
@@ -99,4 +118,27 @@ export async function resumeLongVideoResearch(id: string, runtime: ResumeResearc
   if (runtime.windowTimeoutSeconds !== undefined) request.windowTimeoutSeconds = runtime.windowTimeoutSeconds;
   if (runtime.maxDownloadMB !== undefined) request.maxDownloadMB = runtime.maxDownloadMB;
   return execute(request, { ...options, store }, saved);
+}
+
+/** A follow-up snapshots one compatible parent and saves an independent, resumable question. */
+export async function followUpLongVideoResearch(id: string, runtime: FollowUpResearchOptions, options: Omit<SessionExecutionOptions, "saveSession"> = {}): Promise<LongVideoResult> {
+  const parsed = followUpSchema.safeParse(runtime);
+  if (!parsed.success) throw new ResearchSessionError("INVALID_REQUEST", "Supply a new question and valid follow-up mode and budgets. Language follow-ups require zero detail windows; multimodal follow-ups require one to four.");
+  const input = parsed.data, store = options.store ?? new ResearchSessionStore();
+  const parent = await store.withLock(id, async () => {
+    const record = await store.load(id);
+    if (record.compatibility !== sessionCompatibility(record.request)) throw new ResearchSessionError("SESSION_INCOMPATIBLE", "The configured provider, model, ASR settings or engine changed. Start a new research session.");
+    return record;
+  });
+  const request: LongVideoRequest = {
+    ...parent.request, question: input.question, mode: input.mode,
+    maxDetailWindows: input.maxDetailWindows ?? (input.mode === "language" ? 0 : 2),
+  };
+  if (input.detailWindowSeconds !== undefined) request.detailWindowSeconds = input.detailWindowSeconds;
+  if (input.url !== undefined) request.url = input.url;
+  if (input.timeoutSeconds !== undefined) request.timeoutSeconds = input.timeoutSeconds;
+  if (input.windowTimeoutSeconds !== undefined) request.windowTimeoutSeconds = input.windowTimeoutSeconds;
+  if (input.maxDownloadMB !== undefined) request.maxDownloadMB = input.maxDownloadMB;
+  return execute(request, { ...options, store, saveSession: true }, undefined,
+    { result: parent.result, parentSessionId: parent.id, parentRevision: parent.revision });
 }

@@ -32,6 +32,17 @@ export function validateContinuation(previous: LongVideoResult, request: LongVid
     if (evidence.has(item.id)) incompatible("duplicate evidence IDs.");
     evidence.set(item.id, item);
   }
+  if (previous.follow_up) {
+    if (!["language", "multimodal"].includes(request.mode)) incompatible("follow-up mode must use language materials.");
+    if (request.mode === "language" ? plan.max_detail_windows !== 0 : plan.max_detail_windows < 1) incompatible("follow-up detail planning does not match its mode.");
+    const reused = previous.follow_up.reused_evidence_ids;
+    if (new Set(reused).size !== reused.length) incompatible("duplicate reused language evidence IDs.");
+    for (const id of reused) {
+      const item = evidence.get(id), segment = overview.find((s) => s.evidence_ids.includes(id));
+      if (!item || !segment || !["caption", "asr"].includes(item.kind) || !item.content?.trim() || item.content.length > 32_000 || item.source.platform !== video.platform || item.source.video_id !== video.id || item.source.part_id !== video.partId || item.source.url !== old.canonicalUrl || item.time_basis !== "source" || !item.time_range || !sameWindow(item.time_range, segment.window)) incompatible("reused language materials are missing, foreign, empty or incorrectly timed.");
+    }
+    if (overview.some((s) => s.evidence_ids.some((id) => !reused.includes(id)) || s.evidence_ids.length > 1)) incompatible("a follow-up overview must cite its original language evidence only.");
+  }
   for (const segment of previous.segments) {
     if (ids.has(segment.id)) incompatible("duplicate segment IDs.");
     ids.add(segment.id);
@@ -41,7 +52,8 @@ export function validateContinuation(previous: LongVideoResult, request: LongVid
     const primary = segment.evidence_ids.map((id) => evidence.get(id));
     if (primary.some((e) => !e || !e.id.startsWith(`${segment.id}:`) || e.source.platform !== video.platform || e.source.video_id !== video.id || e.source.part_id !== video.partId || e.source.url !== old.canonicalUrl || e.time_basis !== "source" || !e.time_range || !sameWindow(e.time_range, segment.window))) incompatible("a completed segment cites missing, foreign or incorrectly timed evidence.");
     const kinds = primary.map((e) => e!.kind);
-    if (request.mode === "vision" ? kinds.length !== 1 || kinds[0] !== "visual" || segment.basis !== "video" : request.mode === "multimodal" ? kinds.length !== 2 || !kinds.includes("multimodal") || !kinds.includes("asr") || segment.basis !== "audio_video" : kinds.length !== 1 || !["caption", "asr"].includes(kinds[0]) || !["captions", "audio"].includes(segment.basis)) incompatible("saved evidence does not match the research mode.");
+    const languageOnly = request.mode === "language" || (!!previous.follow_up && segment.phase === "overview");
+    if (languageOnly ? kinds.length !== 1 || !["caption", "asr"].includes(kinds[0]) || !["captions", "audio"].includes(segment.basis) : request.mode === "vision" ? kinds.length !== 1 || kinds[0] !== "visual" || segment.basis !== "video" : kinds.length !== 2 || !kinds.includes("multimodal") || !kinds.includes("asr") || segment.basis !== "audio_video") incompatible("saved evidence does not match the research mode.");
     if (primary.some((e) => ["caption", "asr"].includes(e!.kind) && !e!.content?.trim())) incompatible("saved language evidence is empty.");
   }
 }

@@ -8,7 +8,7 @@ import { researchBilibiliVideo } from "./bilibili.js";
 import { researchXiaohongshuNote } from "./note-research.js";
 import { xiaohongshuResearchResultShape } from "./note-result-schema.js";
 import { researchVideo } from "./research.js";
-import { startLongVideoResearch, resumeLongVideoResearch, sanitizeSessionResult } from "./research-sessions.js";
+import { followUpLongVideoResearch, startLongVideoResearch, resumeLongVideoResearch, sanitizeSessionResult } from "./research-sessions.js";
 import { ResearchSessionStore } from "./research-session-store.js";
 import { longVideoResultShape } from "./long-video-schema.js";
 import { researchResultShape } from "./result-schema.js";
@@ -164,7 +164,7 @@ server.registerTool("analyze_video_url", {
 
 server.registerTool("analyze_long_video_url", {
   title: "Research a Long Video with Catalyst",
-  description: "Research one selected video or Bilibili part with bounded overview and detail windows. Reports original source times, separate overview/detail coverage and unread intervals. Language uses captions or ASR; vision removes audio; multimodal includes explicit ASR. By default saves local research checkpoints for explicit resume after interruption, without retaining media or credentials. Use save_session=false for a transient run. No background continuation or new-question cache. Comments are not collected.",
+  description: "Research one selected video or Bilibili part with bounded overview and detail windows. Reports original source times, separate overview/detail coverage and unread intervals. Language uses captions or ASR; vision removes audio; multimodal includes explicit ASR. By default saves local research checkpoints for explicit resume or a separate follow-up question, without retaining media or credentials. Use save_session=false for a transient run. No background continuation. Comments are not collected.",
   inputSchema: {
     url: z.string().min(1).max(8192),
     question: z.string().min(3),
@@ -202,6 +202,29 @@ function sessionFailure(error: unknown) {
   return { ...result(JSON.stringify({ error: issue })), isError: true };
 }
 const sessionIdSchema = z.string().uuid().describe("Local research session UUID returned by analyze_long_video_url or list_research_sessions.");
+server.registerTool("follow_up_long_video_research", {
+  title: "Ask a New Question About a Saved Video",
+  description: "Create an independent saved question from a compatible long-video session. Reuses saved source captions or ASR, never the parent's reports, relevance or final answer. Recomputes relevance and focus for the new question. Language mode uses saved text only; multimodal locates detail windows from text and acquires only those clips for new visual analysis. Missing material remains explicit. The selected video, part, time range and language stay fixed; the parent record is unchanged. No cross-video search or background work.",
+  inputSchema: z.strictObject({
+    session_id: sessionIdSchema,
+    question: z.string().trim().min(3).describe("A new research question about the same selected video and saved source interval."),
+    mode: z.enum(["language", "multimodal"]).default("language").describe("language answers from saved captions/ASR only; multimodal additionally inspects newly selected detail clips. Transcripts do not establish visual evidence."),
+    url: z.string().min(1).max(8192).optional().describe("Optional fresh source/share URL; it must resolve to the same video and selected part. Access parameters are not saved."),
+    max_detail_windows: z.number().int().min(0).max(4).optional().describe("Language requires 0 (default). Multimodal requires 1 to 4 (default 2)."),
+    detail_window_seconds: z.number().int().min(30).max(300).optional(),
+    timeout_seconds: z.number().min(5).max(1800).optional(),
+    window_timeout_seconds: z.number().int().min(15).max(600).optional(),
+    max_download_mb: z.number().int().min(32).max(2048).optional(),
+  }),
+  outputSchema: longVideoResultShape,
+  annotations: { readOnlyHint: false, destructiveHint: false },
+}, async ({ session_id, question, mode, url, max_detail_windows, detail_window_seconds, timeout_seconds, window_timeout_seconds, max_download_mb }, extra) => {
+  try {
+    const research = await followUpLongVideoResearch(session_id, { question, mode, url, maxDetailWindows: max_detail_windows, detailWindowSeconds: detail_window_seconds,
+      timeoutSeconds: timeout_seconds, windowTimeoutSeconds: window_timeout_seconds, maxDownloadMB: max_download_mb }, { signal: extra.signal });
+    return { content: [{ type: "text" as const, text: JSON.stringify(research, null, 2) }], structuredContent: { ...research }, isError: research.status === "unavailable" };
+  } catch (error) { return sessionFailure(error); }
+});
 server.registerTool("resume_long_video_research", {
   title: "Resume a Saved Long-video Research Session",
   description: "Reload a local session, revalidate the selected source, and retry only unfinished overview/detail windows for the original question. Successful windows retain their source evidence IDs and incur no acquisition, transcription or segment-analysis calls; final synthesis is rebuilt. The original mode, language, quality and research plan stay fixed. Runtime budgets apply to this invocation. No automatic background work.",
@@ -221,7 +244,7 @@ server.registerTool("resume_long_video_research", {
   } catch (error) { return sessionFailure(error); }
 });
 server.registerTool("list_research_sessions", {
-  title: "List Local Research Sessions", description: "List up to 100 saved local long-video research sessions, newest first. No source or provider calls.",
+  title: "List Local Research Sessions", description: "List up to 100 saved local long-video research sessions, their questions and any follow-up parent revision, newest first. No source or provider calls.",
   inputSchema: {}, annotations: { readOnlyHint: true },
 }, async () => {
   try { const sessions = await new ResearchSessionStore().list(); return { ...result(JSON.stringify({ sessions }, null, 2)), structuredContent: { sessions } }; }

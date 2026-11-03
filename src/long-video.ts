@@ -2,6 +2,7 @@ import { performance } from "node:perf_hooks";
 import type { Evidence, ExecutionContext, ResearchFailure, ResearchRequest, SourceContext } from "./contracts.js";
 import type { LongVideoContinuation, LongVideoDependencies, LongVideoRequest, LongVideoResult, LongVideoSegment, SourceWindow } from "./long-video-contracts.js";
 import { validateContinuation } from "./long-video-continuation.js";
+import { prepareFollowUpMaterials } from "./long-video-materials.js";
 import { getAdapter, parseSourceUrl } from "./adapters/index.js";
 import { acquireMediaWindow, prepareResearchWindow } from "./media-window.js";
 import { collectFindings } from "./research.js";
@@ -115,7 +116,7 @@ export async function researchLongVideo(request: LongVideoRequest, overrides: Pa
     processing: { duration_ms: 0, stage_durations_ms: {}, provider: null, usage: null, download_bytes: 0 },
     plan: null, segments: [], coverage: { overview: [], detail: [], unreviewed: [], overview_complete: false, limitations: ["Overview coverage records successfully interpreted input windows, not exhaustive frame inspection or semantic verification.", "Detail coverage is separate from the coarse overview. Model-proposed focus offsets select clips; they do not prove exact event times.", "Caption-only windows establish language coverage, not visual coverage. Provider sampling inside video windows is opaque."] },
   };
-  let stage = "validation", downloaded = 0, checkpointAllowed = !continuation.previous;
+  let stage = "validation", downloaded = 0, checkpointAllowed = !continuation.previous && !continuation.materialReuse;
   const runStage = async <T>(name: string, action: () => Promise<T>, execution = context): Promise<T> => {
     stage = name; const at = performance.now();
     try { execution.signal.throwIfAborted(); return await bounded(action(), execution); }
@@ -139,6 +140,8 @@ export async function researchLongVideo(request: LongVideoRequest, overrides: Pa
   };
   try {
     validate(request);
+    if (continuation.previous && continuation.materialReuse) throw new LongVideoError("INVALID_REQUEST", "Resume a question or reuse materials for a new question in one invocation, not both.");
+    if (continuation.materialReuse && (request.mode === "vision" || (request.mode === "language" ? (request.maxDetailWindows ?? 2) !== 0 : (request.maxDetailWindows ?? 2) < 1))) throw new LongVideoError("INVALID_REQUEST", "Follow-ups require language mode without detail windows or multimodal mode with visual detail windows.");
     const url = parseSourceUrl(request.url); request = { ...request, url: url.toString(), includeComments: false };
     const source = await runStage("resolve", () => deps.resolve(request, context));
     result.video = { ...source.video, sourceUrl: publicUrl(source.video.sourceUrl), canonicalUrl: publicUrl(source.video.canonicalUrl) };
@@ -159,8 +162,23 @@ export async function researchLongVideo(request: LongVideoRequest, overrides: Pa
       validateContinuation(continuation.previous, request, { ...source, video: { ...source.video, canonicalUrl: publicUrl(source.video.canonicalUrl) } }, result.plan);
       result.segments = structuredClone(continuation.previous.segments);
       result.evidence.push(...structuredClone(continuation.previous.evidence.filter((e) => e.kind !== "metadata")));
+      if (continuation.previous.follow_up) result.follow_up = structuredClone(continuation.previous.follow_up);
       checkpointAllowed = true;
     }
+    if (continuation.materialReuse) {
+      const reuse = continuation.materialReuse;
+      const language = prepareFollowUpMaterials(reuse.result, request, { ...source, video: { ...source.video, canonicalUrl: publicUrl(source.video.canonicalUrl) } }, result.plan);
+      result.follow_up = { parent_session_id: reuse.parentSessionId, parent_revision: reuse.parentRevision, reused_evidence_ids: language.map((e) => e.id) };
+      result.evidence.push(...language);
+      for (const segment of result.segments) {
+        const primary = language.filter((e) => e.id.startsWith(`${segment.id}:`));
+        segment.evidence_ids = primary.map((e) => e.id);
+        segment.basis = primary[0]?.kind === "caption" ? "captions" : "audio";
+      }
+      checkpointAllowed = true;
+    }
+    const reusedLanguage = new Map(result.follow_up ? result.segments.filter((s) => s.phase === "overview").map((s) => [s.id, structuredClone(result.evidence.filter((e) => s.evidence_ids.includes(e.id) && ["caption", "asr"].includes(e.kind)))]) : []);
+    if (result.follow_up) result.coverage.limitations.push("Follow-up overview coverage is language-only, from reused captions or ASR. Visual inspection is limited to successful detail windows; no old question's reports, relevance or visual conclusions were reused.");
     await checkpoint();
     const analyze = async (segment: LongVideoSegment, parentContext: ExecutionContext) => {
       const windowController = new AbortController();
@@ -178,7 +196,12 @@ export async function researchLongVideo(request: LongVideoRequest, overrides: Pa
         delete segment.error; delete segment.relevance_score; delete segment.proposed_focus_offset_seconds;
         const id = `${segment.id}:source`;
         const cues = request.mode === "language" && source.captions.status === "available" ? source.captions.cues.filter((cue) => Number.isFinite(cue.start) && Number.isFinite(cue.end) && cue.start >= 0 && cue.end > cue.start && cue.end > segment.window.start_seconds && cue.start < segment.window.end_seconds && cue.content.trim()) : [];
-        if (cues.length) {
+        if (result.follow_up && segment.phase === "overview") {
+          const language = reusedLanguage.get(segment.id) ?? [];
+          if (!language.length) throw new LongVideoError("MATERIAL_UNAVAILABLE", "This overview window has no completed parent caption or ASR material. It was not acquired again; resume the parent or start a new research session to obtain missing materials.");
+          primary.push(...language);
+          segment.basis = language[0].kind === "caption" ? "captions" : "audio";
+        } else if (cues.length) {
           const content = cues.map((cue) => `[${cue.start}–${cue.end}] ${cue.content}`).join("\n");
           if (content.length > 32_000) throw new LongVideoError("TEXT_BUDGET_EXCEEDED", "This caption window exceeds 32,000 characters; reduce segment_seconds.");
           segment.basis = "captions";
@@ -217,7 +240,8 @@ export async function researchLongVideo(request: LongVideoRequest, overrides: Pa
           }
         }
         result.evidence.push(...primary); segment.evidence_ids = primary.map((e) => e.id);
-        const text = [instructions(request), `PHASE: ${segment.phase}. Source interval: ${JSON.stringify(segment.window)}. Supplied clip local time zero maps to source start_seconds.`, segment.phase === "overview" ? "Give a concise overview of this entire input window, relevant concepts and limits. Set relevance_score from 0 to 3. Propose focus_offset_seconds within this clip for a later closer look; this is only a navigation proposal, never verified timing." : "Inspect the supplied detail window closely for the research question. Distinguish readable slide/formula evidence from explanation. Do not fill unreadable content using general knowledge.", request.mode === "multimodal" ? "Use the supplied ASR evidence as the language channel even if the video endpoint does not expose its audio to you. Distinguish ASR text from what is visible; do not claim to have independently verified every spoken word." : "", `VALID evidence_ids: ${JSON.stringify(primary.map((evidence) => evidence.id))}. For example, use ${JSON.stringify({ statement: "A directly supported observation", evidence_ids: [primary[0].id], limitations: ["Model interpretation"] })}. Never invent shorter or alternate evidence IDs.`, "PRIMARY EVIDENCE:", JSON.stringify(primary)].join("\n\n");
+        const languageOverview = !!result.follow_up && segment.phase === "overview";
+        const text = [instructions(languageOverview ? { ...request, mode: "language" } : request), `PHASE: ${segment.phase}. Source interval: ${JSON.stringify(segment.window)}. Supplied clip local time zero maps to source start_seconds.`, segment.phase === "overview" ? "Give a concise overview of this entire input window, relevant concepts and limits. Set relevance_score from 0 to 3. Propose focus_offset_seconds within this clip for a later closer look; this is only a navigation proposal, never verified timing." : "Inspect the supplied detail window closely for the research question. Distinguish readable slide/formula evidence from explanation. Do not fill unreadable content using general knowledge.", languageOverview ? "FOLLOW-UP: Reassess the supplied original language material for this new question. No old question's report, relevance, focus or conclusions are supplied. This is language-only coverage, not a new visual inspection. ASR without internal alignment cannot establish the exact location of a formula or event; any focus offset is an uncertain navigation proposal." : request.mode === "multimodal" ? "Use the supplied ASR evidence as the language channel even if the video endpoint does not expose its audio to you. Distinguish ASR text from what is visible; do not claim to have independently verified every spoken word." : "", `VALID evidence_ids: ${JSON.stringify(primary.map((evidence) => evidence.id))}. For example, use ${JSON.stringify({ statement: "A directly supported observation", evidence_ids: [primary[0].id], limitations: ["Model interpretation"] })}. Never invent shorter or alternate evidence IDs.`, "PRIMARY EVIDENCE:", JSON.stringify(primary)].join("\n\n");
         const raw = await run(`${segment.phase}_analysis`, () => prepared ? deps.analyzeMedia(prepared.path, text, segment.phase === "overview" ? "low" : "default", context, request.language) : deps.analyzeText(text, context, request.language));
         const parsed = { evidence: primary, findings: [], analysis: null, warnings: [] } as Pick<LongVideoResult, "evidence" | "findings" | "analysis" | "warnings">;
         const valid = collectFindings(raw, parsed);
@@ -256,7 +280,7 @@ export async function researchLongVideo(request: LongVideoRequest, overrides: Pa
       const focus = candidate.proposed_focus_offset_seconds ?? (candidate.window.end_seconds - candidate.window.start_seconds) / 2;
       const from = Math.max(candidate.window.start_seconds, Math.min(candidate.window.end_seconds - length, candidate.window.start_seconds + focus - length / 2));
       if (result.segments.some((s) => s.phase === "detail" && s.window.start_seconds === from && s.window.end_seconds === from + length)) continue;
-      const segment: LongVideoSegment = { id: `detail:${result.segments.filter((s) => s.phase === "detail").length + 1}`, phase: "detail", window: { start_seconds: from, end_seconds: from + length }, status: "pending", basis: candidate.basis, evidence_ids: [], analysis: null };
+      const segment: LongVideoSegment = { id: `detail:${result.segments.filter((s) => s.phase === "detail").length + 1}`, phase: "detail", window: { start_seconds: from, end_seconds: from + length }, status: "pending", basis: result.follow_up && request.mode === "multimodal" ? "audio_video" : candidate.basis, evidence_ids: [], analysis: null };
       result.segments.push(segment);
     }
     await checkpoint();
@@ -276,7 +300,9 @@ export async function researchLongVideo(request: LongVideoRequest, overrides: Pa
       const raw = await runStage("synthesis", () => deps.analyzeText(synthesis, context, request.language));
       const final = { evidence: synthesisEvidence, findings: [], analysis: null, warnings: result.warnings } as Pick<LongVideoResult, "evidence" | "findings" | "analysis" | "warnings">;
       const valid = collectFindings(raw, final); result.findings = final.findings; result.analysis = final.analysis;
-      result.status = valid && result.coverage.overview_complete && result.errors.length === 0 && result.segments.every((segment) => segment.status === "complete") ? "complete" : "partial";
+      const missingVisualDetail = !!result.follow_up && request.mode === "multimodal" && !result.coverage.detail.length;
+      if (missingVisualDetail) result.warnings.push("This multimodal follow-up has no successful visual detail window. Only saved language material was reviewed; formulas and figures have not been visually inspected for this question.");
+      result.status = valid && !missingVisualDetail && result.coverage.overview_complete && result.errors.length === 0 && result.segments.every((segment) => segment.status === "complete") ? "complete" : "partial";
     } else result.status = result.evidence.length > 1 ? "partial" : "unavailable";
     if (context.signal.aborted) throw context.signal.reason;
     if (result.segments.some((segment) => segment.status === "pending")) result.warnings.push("Some planned overview windows were not processed within the request budget. See coverage.unreviewed and segment status.");
