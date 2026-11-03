@@ -92,6 +92,39 @@ test("a fresh store instance resumes only the failed interval and advertises dur
   assert.deepEqual([...next.calls.created].sort(), [...next.calls.disposed].sort());
 }));
 
+test("the full 71-minute selected part resumes its only failed overview and preserves the 76-second tail", async () => temporary(async (directory, store) => {
+  const first = fixture(source(4276)), analyze = first.deps.analyzeMedia;
+  first.deps.analyzeMedia = async (...args) => {
+    const raw = await analyze(...args);
+    if (evidenceIn(args[1])[0].id === "overview:3:source") throw Object.assign(new Error("Fixture one-window provider interruption"), { code: "UPSTREAM_ERROR", retryable: true });
+    return raw;
+  };
+  const previous = await startLongVideoResearch(REQUEST, { store, dependencies: first.deps }), id = idOf(previous);
+  assert.equal(previous.status, "partial");
+  assert.equal(previous.plan?.overview_windows.length, 8);
+  assert.equal(previous.segments.filter((segment) => segment.status === "complete").length, 7);
+  assert.equal(previous.segments[2].status, "failed");
+  assert.deepEqual(previous.coverage.unreviewed, [{ start_seconds: 1200, end_seconds: 1800 }]);
+  assert.deepEqual(previous.coverage.overview.at(-1), { start_seconds: 4200, end_seconds: 4276 });
+  const restarted = new ResearchSessionStore(directory), durable = await restarted.load(id);
+  assert.equal(durable.result.segments.filter((segment) => segment.status === "complete").length, 7);
+  const next = fixture(source(4276), "full-course-resume");
+  const result = await resumeLongVideoResearch(id, {}, { store: restarted, dependencies: next.deps });
+  assert.equal(result.status, "complete");
+  assert.deepEqual(next.calls.acquired, [[1200, 1800]]);
+  assert.equal(next.calls.transcribed.length, 1); assert.equal(next.calls.media.length, 1); assert.equal(next.calls.text.length, 1);
+  assert.equal(result.session?.reused_segments, 7); assert.equal(result.session?.processed_segments, 1);
+  assert.equal(result.video?.partId, "38253823575"); assert.equal(result.video?.metadata?.part, 17); assert.equal(result.video?.canonicalUrl, CANONICAL);
+  assert.equal(result.coverage.overview_complete, true); assert.deepEqual(result.coverage.unreviewed, []);
+  assert.deepEqual(result.coverage.overview, result.plan?.overview_windows); assert.equal(result.coverage.overview.length, 8);
+  assert.deepEqual(result.coverage.overview.at(-1), { start_seconds: 4200, end_seconds: 4276 });
+  const ids = new Set(result.evidence.map((item) => item.id)); assert.equal(ids.size, result.evidence.length);
+  assert.ok(result.findings.every((finding) => finding.evidence_ids.every((ref) => ids.has(ref))));
+  assert.deepEqual((await restarted.load(id)).result, result);
+  assert.deepEqual([...first.calls.created].sort(), [...first.calls.disposed].sort());
+  assert.deepEqual([...next.calls.created].sort(), [...next.calls.disposed].sort());
+}));
+
 test("processed and reused counters include overview and detail phases without charging old windows", async () => temporary(async (_directory, store) => {
   const request = { ...REQUEST, maxDetailWindows: 1 }, first = fixture(source(1200));
   const result = await startLongVideoResearch(request, { store, dependencies: first.deps });

@@ -186,13 +186,13 @@ server.registerTool("analyze_long_video_url", {
   annotations: { readOnlyHint: false, destructiveHint: false },
 }, async ({ url, question, mode, language, source_quality, start_seconds, end_seconds, segment_seconds, max_segments, max_detail_windows, detail_window_seconds, max_download_mb, window_timeout_seconds, timeout_seconds, save_session }, extra) => {
   try {
-  const research = await startLongVideoResearch({
-    url, question, mode, language, startSeconds: start_seconds, endSeconds: end_seconds,
-    segmentSeconds: segment_seconds, maxSegments: max_segments, maxDetailWindows: max_detail_windows,
-    detailWindowSeconds: detail_window_seconds, maxDownloadMB: max_download_mb, windowTimeoutSeconds: window_timeout_seconds, timeoutSeconds: timeout_seconds,
-    sourceQuality: source_quality ? { profile: source_quality.profile, resolution: source_quality.resolution, fps: source_quality.fps, onUnavailable: source_quality.on_unavailable } : undefined,
-  }, { signal: extra.signal, saveSession: save_session });
-  return { content: [{ type: "text" as const, text: JSON.stringify(research, null, 2) }], structuredContent: { ...research }, isError: research.status === "unavailable" };
+    const research = await startLongVideoResearch({
+      url, question, mode, language, startSeconds: start_seconds, endSeconds: end_seconds,
+      segmentSeconds: segment_seconds, maxSegments: max_segments, maxDetailWindows: max_detail_windows,
+      detailWindowSeconds: detail_window_seconds, maxDownloadMB: max_download_mb, windowTimeoutSeconds: window_timeout_seconds, timeoutSeconds: timeout_seconds,
+      sourceQuality: source_quality ? { profile: source_quality.profile, resolution: source_quality.resolution, fps: source_quality.fps, onUnavailable: source_quality.on_unavailable } : undefined,
+    }, { signal: extra.signal, saveSession: save_session });
+    return { content: [{ type: "text" as const, text: JSON.stringify(research, null, 2) }], structuredContent: { ...research }, isError: research.status === "unavailable" };
   } catch (error) { return sessionFailure(error); }
 });
 
