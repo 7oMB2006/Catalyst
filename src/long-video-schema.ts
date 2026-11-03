@@ -4,6 +4,7 @@ import { researchResultShape } from "./result-schema.js";
 const window = z.object({ start_seconds: z.number().nonnegative(), end_seconds: z.number().positive() });
 export const longVideoResultShape = {
   ...researchResultShape,
+  session: z.object({ id: z.string().uuid(), revision: z.number().int().positive(), created_at: z.string(), updated_at: z.string(), reused_segments: z.number().int().nonnegative(), processed_segments: z.number().int().nonnegative() }).nullable().optional(),
   plan: z.object({
     strategy: z.literal("segmented_overview_then_detail"), requested_window: window,
     segment_seconds: z.number(), overview_windows: z.array(window), max_detail_windows: z.number(),

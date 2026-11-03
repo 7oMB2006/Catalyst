@@ -105,9 +105,27 @@ analyze_long_video_url({
 })
 ```
 
-Overview media is prepared at up to 360p/1fps, and detail media at up to 720p/5fps. Complete overview coverage does not establish that every frame or formula was read. Defaults are a 512 MiB cumulative acquired-file budget, a 32 MiB prepared upload limit, and a 900-second shared deadline (configurable up to 1,800 seconds; the host timeout must be longer). Budget or deadline failures retain partial reports. Media is acquired by source window; cross-request caching is not implemented. See the [long-video design and acceptance record](./docs/long-video.md).
+Overview media is prepared at up to 360p/1fps, and detail media at up to 720p/5fps. Complete overview coverage does not establish that every frame or formula was read. Defaults are a 512 MiB cumulative acquired-file budget, a 32 MiB prepared upload limit, and a 900-second shared deadline (configurable up to 1,800 seconds; the host timeout must be longer). Budget or deadline failures retain partial reports. Media is acquired by source window. See the [long-video design and acceptance record](./docs/long-video.md).
 
-The new tool uses an available source by default, recording its actual quality. Visual and multimodal acquisition prefer formats at or below 1080p; inspect the reported dimensions when a source fallback is used. The default media-file budget is 256 MiB, configurable through `CATALYST_MAX_MEDIA_MB`. Acquisition can download the entire source before cutting the requested interval, and this preview has no cross-request media or transcription cache. To impose a quality threshold, supply `source_quality`, for example:
+### Save and resume long-video research
+
+Long-video research saves progress locally by default (`save_session: true`). The result's `session.id` identifies the record. After a timeout, cancellation, or server restart, resume the same research question:
+
+```text
+resume_long_video_research({
+  session_id: "<session.id from the original result>",
+  timeout_seconds: 1800,
+  window_timeout_seconds: 300
+})
+```
+
+Completed overview and detail segments retain their reports, captions/ASR, and citations. Resume processes unfinished segments, then synthesizes an updated answer and coverage report. Completed segments are not downloaded, transcribed, or analyzed again. The per-request deadline and acquired-file budget start afresh; `session.reused_segments` and `session.processed_segments` distinguish reused work from this invocation.
+
+Use `list_research_sessions` to find records, `get_research_session({ session_id })` to inspect one, and `delete_research_session({ session_id })` to remove one. Records live in `~/.catalyst/sessions`, or the directory set by `CATALYST_SESSION_DIR`. They contain sanitized results and progress, without media files, credentials, or signed acquisition URLs. Set `save_session: false` on the original long-video call for an unsaved run.
+
+Resume keeps the original question, selected source/part, mode, language, quality, and window plan. Only runtime deadlines and the acquired-file budget may change. An optional `url` can supply a fresh original share link when access requires it; the resolved source must still match, and access parameters are not saved. Asking a new question requires a new research call. There is no automatic background continuation. See [research-session storage and acceptance criteria](./docs/research-sessions.md).
+
+The generic video tool uses an available source by default, recording its actual quality. Visual and multimodal acquisition prefer formats at or below 1080p; inspect the reported dimensions when a source fallback is used. The default media-file budget is 256 MiB, configurable through `CATALYST_MAX_MEDIA_MB`. Generic acquisition can download the entire source before cutting the requested interval. There is no shared media or transcription cache across independent research calls; saved long-video sessions reuse their own completed segments. To impose a quality threshold, supply `source_quality`, for example:
 
 ```text
 source_quality: { profile: "high", on_unavailable: "error" }
