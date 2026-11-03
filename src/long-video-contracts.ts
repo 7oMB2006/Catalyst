@@ -22,6 +22,14 @@ export interface LongVideoSegment {
   error?: string;
 }
 export interface LongVideoResult extends ResearchResult {
+  session?: null | {
+    id: string;
+    revision: number;
+    created_at: string;
+    updated_at: string;
+    reused_segments: number;
+    processed_segments: number;
+  };
   plan: null | {
     strategy: "segmented_overview_then_detail";
     requested_window: SourceWindow;
@@ -40,6 +48,11 @@ export interface LongVideoResult extends ResearchResult {
     overview_complete: boolean;
     limitations: string[];
   };
+}
+export interface LongVideoContinuation {
+  previous?: LongVideoResult;
+  /** Called after planning, each window, the detail plan, and finalization, including cancellation. */
+  onCheckpoint?: (result: LongVideoResult) => Promise<void>;
 }
 export interface PreparedWindow { path: string; dispose(): Promise<void> }
 export interface LongVideoDependencies {

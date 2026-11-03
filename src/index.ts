@@ -8,7 +8,8 @@ import { researchBilibiliVideo } from "./bilibili.js";
 import { researchXiaohongshuNote } from "./note-research.js";
 import { xiaohongshuResearchResultShape } from "./note-result-schema.js";
 import { researchVideo } from "./research.js";
-import { researchLongVideo } from "./long-video.js";
+import { startLongVideoResearch, resumeLongVideoResearch, sanitizeSessionResult } from "./research-sessions.js";
+import { ResearchSessionStore } from "./research-session-store.js";
 import { longVideoResultShape } from "./long-video-schema.js";
 import { researchResultShape } from "./result-schema.js";
 
@@ -163,7 +164,7 @@ server.registerTool("analyze_video_url", {
 
 server.registerTool("analyze_long_video_url", {
   title: "Research a Long Video with Catalyst",
-  description: "Research a single selected Bilibili part, YouTube video or accessible Xiaohongshu video with bounded overview segments followed by closer detail windows. Use for videos longer than the standard tool's 900-second media limit. Acquires source windows, preserves original source times and part identity, and reports coarse overview, closer detail and unreviewed intervals separately. Language mode prefers available captions and otherwise transcribes windowed audio; vision removes audio; multimodal retains audio and video. Model focus offsets only propose detail clips, never verified event timestamps. No cross-request media cache or background continuation. Comments are not collected.",
+  description: "Research one selected video or Bilibili part with bounded overview and detail windows. Reports original source times, separate overview/detail coverage and unread intervals. Language uses captions or ASR; vision removes audio; multimodal includes explicit ASR. By default saves local research checkpoints for explicit resume after interruption, without retaining media or credentials. Use save_session=false for a transient run. No background continuation or new-question cache. Comments are not collected.",
   inputSchema: {
     url: z.string().min(1).max(8192),
     question: z.string().min(3),
@@ -179,17 +180,66 @@ server.registerTool("analyze_long_video_url", {
     max_download_mb: z.number().int().min(32).max(2048).default(512).describe("Cumulative retained acquired-file bytes, including repeated detail acquisitions. This is not a hard cap on network traffic."),
     window_timeout_seconds: z.number().int().min(15).max(600).default(180).describe("Deadline for one overview or detail window, within the shared request deadline. A stalled window fails independently so later windows can still run."),
     timeout_seconds: z.number().min(5).max(1800).default(900).describe("Shared deadline for all windows and synthesis. The host timeout must exceed this plus startup overhead. Completed segment reports survive cancellation or timeout."),
+    save_session: z.boolean().default(true).describe("Save local reports, transcripts, references and progress after each window for explicit resume. Media, credentials and signed access URLs are not saved."),
   },
   outputSchema: longVideoResultShape,
-  annotations: { readOnlyHint: true },
-}, async ({ url, question, mode, language, source_quality, start_seconds, end_seconds, segment_seconds, max_segments, max_detail_windows, detail_window_seconds, max_download_mb, window_timeout_seconds, timeout_seconds }, extra) => {
-  const research = await researchLongVideo({
+  annotations: { readOnlyHint: false, destructiveHint: false },
+}, async ({ url, question, mode, language, source_quality, start_seconds, end_seconds, segment_seconds, max_segments, max_detail_windows, detail_window_seconds, max_download_mb, window_timeout_seconds, timeout_seconds, save_session }, extra) => {
+  try {
+  const research = await startLongVideoResearch({
     url, question, mode, language, startSeconds: start_seconds, endSeconds: end_seconds,
     segmentSeconds: segment_seconds, maxSegments: max_segments, maxDetailWindows: max_detail_windows,
     detailWindowSeconds: detail_window_seconds, maxDownloadMB: max_download_mb, windowTimeoutSeconds: window_timeout_seconds, timeoutSeconds: timeout_seconds,
     sourceQuality: source_quality ? { profile: source_quality.profile, resolution: source_quality.resolution, fps: source_quality.fps, onUnavailable: source_quality.on_unavailable } : undefined,
-  }, undefined, extra.signal);
+  }, { signal: extra.signal, saveSession: save_session });
   return { content: [{ type: "text" as const, text: JSON.stringify(research, null, 2) }], structuredContent: { ...research }, isError: research.status === "unavailable" };
+  } catch (error) { return sessionFailure(error); }
+});
+
+function sessionFailure(error: unknown) {
+  const value = error as { code?: string; message?: string };
+  const issue = { code: value.code ?? "SESSION_FAILED", message: value.message ?? "The session operation failed." };
+  return { ...result(JSON.stringify({ error: issue })), isError: true };
+}
+const sessionIdSchema = z.string().uuid().describe("Local research session UUID returned by analyze_long_video_url or list_research_sessions.");
+server.registerTool("resume_long_video_research", {
+  title: "Resume a Saved Long-video Research Session",
+  description: "Reload a local session, revalidate the selected source, and retry only unfinished overview/detail windows for the original question. Successful windows retain their source evidence IDs and incur no acquisition, transcription or segment-analysis calls; final synthesis is rebuilt. The original mode, language, quality and research plan stay fixed. Runtime budgets apply to this invocation. No automatic background work.",
+  inputSchema: z.strictObject({
+    session_id: sessionIdSchema,
+    url: z.string().min(1).max(8192).optional().describe("Optional fresh original source/share URL when access parameters expired. It must resolve to the same video and selected part; access parameters are not persisted."),
+    timeout_seconds: z.number().min(5).max(1800).optional(),
+    window_timeout_seconds: z.number().int().min(15).max(600).optional(),
+    max_download_mb: z.number().int().min(32).max(2048).optional(),
+  }),
+  outputSchema: longVideoResultShape,
+  annotations: { readOnlyHint: false, destructiveHint: false },
+}, async ({ session_id, url, timeout_seconds, window_timeout_seconds, max_download_mb }, extra) => {
+  try {
+    const research = await resumeLongVideoResearch(session_id, { url, timeoutSeconds: timeout_seconds, windowTimeoutSeconds: window_timeout_seconds, maxDownloadMB: max_download_mb }, { signal: extra.signal });
+    return { content: [{ type: "text" as const, text: JSON.stringify(research, null, 2) }], structuredContent: { ...research }, isError: research.status === "unavailable" };
+  } catch (error) { return sessionFailure(error); }
+});
+server.registerTool("list_research_sessions", {
+  title: "List Local Research Sessions", description: "List up to 100 saved local long-video research sessions, newest first. No source or provider calls.",
+  inputSchema: {}, annotations: { readOnlyHint: true },
+}, async () => {
+  try { const sessions = await new ResearchSessionStore().list(); return { ...result(JSON.stringify({ sessions }, null, 2)), structuredContent: { sessions } }; }
+  catch (error) { return sessionFailure(error); }
+});
+server.registerTool("get_research_session", {
+  title: "Read a Local Research Session", description: "Read the last durable research result, its coverage and session revision without source or provider calls.",
+  inputSchema: { session_id: sessionIdSchema }, outputSchema: longVideoResultShape, annotations: { readOnlyHint: true },
+}, async ({ session_id }) => {
+  try { const research = sanitizeSessionResult((await new ResearchSessionStore().load(session_id)).result); return { ...result(JSON.stringify(research, null, 2)), structuredContent: { ...research } }; }
+  catch (error) { return sessionFailure(error); }
+});
+server.registerTool("delete_research_session", {
+  title: "Delete a Local Research Session", description: "Delete one local saved result. Refuses while that session is running. No remote content is changed.",
+  inputSchema: { session_id: sessionIdSchema }, annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true },
+}, async ({ session_id }) => {
+  try { await new ResearchSessionStore().delete(session_id); return { ...result(JSON.stringify({ session_id, deleted: true })), structuredContent: { session_id, deleted: true } }; }
+  catch (error) { return sessionFailure(error); }
 });
 
 server.registerTool("analyze_xiaohongshu_note", {

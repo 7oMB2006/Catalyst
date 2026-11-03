@@ -1,6 +1,7 @@
 import { performance } from "node:perf_hooks";
 import type { Evidence, ExecutionContext, ResearchFailure, ResearchRequest, SourceContext } from "./contracts.js";
-import type { LongVideoDependencies, LongVideoRequest, LongVideoResult, LongVideoSegment, SourceWindow } from "./long-video-contracts.js";
+import type { LongVideoContinuation, LongVideoDependencies, LongVideoRequest, LongVideoResult, LongVideoSegment, SourceWindow } from "./long-video-contracts.js";
+import { validateContinuation } from "./long-video-continuation.js";
 import { getAdapter, parseSourceUrl } from "./adapters/index.js";
 import { acquireMediaWindow, prepareResearchWindow } from "./media-window.js";
 import { collectFindings } from "./research.js";
@@ -19,7 +20,7 @@ function publicUrl(raw: string): string {
 function failure(error: unknown, stage: string, context: ExecutionContext): ResearchFailure {
   const value = error as { code?: unknown; name?: string; message?: string; retryable?: boolean };
   const aborted = context.signal.aborted || /AbortError|TimeoutError/.test(value?.name ?? "");
-  const code = aborted ? (context.signal.reason?.name === "TimeoutError" || value?.name === "TimeoutError" ? "TIMEOUT" : "CANCELLED") : typeof value?.code === "string" ? value.code : /not configured|ENOENT/.test(value?.message ?? "") ? "CONFIGURATION_ERROR" : "LONG_VIDEO_FAILED";
+  const code = value?.code === "SESSION_SAVE_FAILED" ? "SESSION_SAVE_FAILED" : aborted ? (context.signal.reason?.name === "TimeoutError" || value?.name === "TimeoutError" ? "TIMEOUT" : "CANCELLED") : typeof value?.code === "string" ? value.code : /not configured|ENOENT/.test(value?.message ?? "") ? "CONFIGURATION_ERROR" : "LONG_VIDEO_FAILED";
   return { code, stage, message: redactSensitiveText(value?.message ?? String(error)), retryable: aborted || value?.retryable === true };
 }
 async function bounded<T>(operation: Promise<T>, context: ExecutionContext): Promise<T> {
@@ -101,7 +102,7 @@ const defaults: LongVideoDependencies = {
   analyzeText: (prompt, context, language) => analyzeTextWithProvider(prompt, { context, language }),
 };
 
-export async function researchLongVideo(request: LongVideoRequest, overrides: Partial<LongVideoDependencies> = {}, externalSignal?: AbortSignal): Promise<LongVideoResult> {
+export async function researchLongVideo(request: LongVideoRequest, overrides: Partial<LongVideoDependencies> = {}, externalSignal?: AbortSignal, continuation: LongVideoContinuation = {}): Promise<LongVideoResult> {
   const started = performance.now(), deps = { ...defaults, ...overrides };
   const timeout = Number.isFinite(request.timeoutSeconds) && request.timeoutSeconds! >= 5 && request.timeoutSeconds! <= 1800 ? request.timeoutSeconds! : 900;
   const controller = new AbortController();
@@ -114,7 +115,7 @@ export async function researchLongVideo(request: LongVideoRequest, overrides: Pa
     processing: { duration_ms: 0, stage_durations_ms: {}, provider: null, usage: null, download_bytes: 0 },
     plan: null, segments: [], coverage: { overview: [], detail: [], unreviewed: [], overview_complete: false, limitations: ["Overview coverage records successfully interpreted input windows, not exhaustive frame inspection or semantic verification.", "Detail coverage is separate from the coarse overview. Model-proposed focus offsets select clips; they do not prove exact event times.", "Caption-only windows establish language coverage, not visual coverage. Provider sampling inside video windows is opaque."] },
   };
-  let stage = "validation", downloaded = 0;
+  let stage = "validation", downloaded = 0, checkpointAllowed = !continuation.previous;
   const runStage = async <T>(name: string, action: () => Promise<T>, execution = context): Promise<T> => {
     stage = name; const at = performance.now();
     try { execution.signal.throwIfAborted(); return await bounded(action(), execution); }
@@ -128,6 +129,13 @@ export async function researchLongVideo(request: LongVideoRequest, overrides: Pa
       result.coverage.unreviewed = uncoveredWindows(result.plan.requested_window, [...result.coverage.overview, ...result.coverage.detail]);
       result.coverage.overview_complete = uncoveredWindows(result.plan.requested_window, result.coverage.overview).length === 0;
     }
+  };
+  const checkpoint = async () => {
+    if (!checkpointAllowed) return;
+    refreshCoverage(); result.processing.duration_ms = Math.round(performance.now() - started);
+    if (result.status === "unavailable" && result.segments.some((s) => s.status === "complete" || s.evidence_ids.length)) result.status = "partial";
+    try { await continuation.onCheckpoint?.(result); }
+    catch (error) { throw Object.assign(new Error(`Research checkpoint could not be saved: ${redactSensitiveText((error as Error).message)}`), { code: "SESSION_SAVE_FAILED" }); }
   };
   try {
     validate(request);
@@ -146,6 +154,14 @@ export async function researchLongVideo(request: LongVideoRequest, overrides: Pa
     result.plan = { strategy: "segmented_overview_then_detail", requested_window: { start_seconds: start, end_seconds: end }, segment_seconds: request.segmentSeconds ?? 600, overview_windows: windows, max_detail_windows: request.maxDetailWindows ?? 2, detail_window_seconds: request.detailWindowSeconds ?? 120, max_download_bytes: (request.maxDownloadMB ?? 512) * 1024 * 1024, window_timeout_seconds: request.windowTimeoutSeconds ?? 180 };
     result.coverage.unreviewed = [{ start_seconds: start, end_seconds: end }];
     result.processing.provider = getConfiguredVideoProvider(); result.processing.model = result.processing.provider === "stepfun" ? process.env.STEPFUN_VIDEO_MODEL ?? "step-3.7-flash" : process.env.GEMINI_VIDEO_MODEL ?? "gemini-2.5-flash";
+    result.segments = windows.map((window, index) => ({ id: `overview:${index + 1}`, phase: "overview", window, status: "pending", basis: request.mode === "language" ? "audio" : request.mode === "vision" ? "video" : "audio_video", evidence_ids: [], analysis: null }));
+    if (continuation.previous) {
+      validateContinuation(continuation.previous, request, { ...source, video: { ...source.video, canonicalUrl: publicUrl(source.video.canonicalUrl) } }, result.plan);
+      result.segments = structuredClone(continuation.previous.segments);
+      result.evidence.push(...structuredClone(continuation.previous.evidence.filter((e) => e.kind !== "metadata")));
+      checkpointAllowed = true;
+    }
+    await checkpoint();
     const analyze = async (segment: LongVideoSegment, parentContext: ExecutionContext) => {
       const windowController = new AbortController();
       const windowMs = Math.max(1, Math.min(parentContext.deadlineMs - Date.now(), result.plan!.window_timeout_seconds * 1000));
@@ -156,6 +172,10 @@ export async function researchLongVideo(request: LongVideoRequest, overrides: Pa
       const primary: Evidence[] = [];
       try {
         context.signal.throwIfAborted();
+        // Reuse complete windows only. A retried window replaces its own old evidence and report.
+        result.evidence = result.evidence.filter((e) => !e.id.startsWith(`${segment.id}:`));
+        segment.status = "pending"; segment.evidence_ids = []; segment.analysis = null;
+        delete segment.error; delete segment.relevance_score; delete segment.proposed_focus_offset_seconds;
         const id = `${segment.id}:source`;
         const cues = request.mode === "language" && source.captions.status === "available" ? source.captions.cues.filter((cue) => Number.isFinite(cue.start) && Number.isFinite(cue.end) && cue.start >= 0 && cue.end > cue.start && cue.end > segment.window.start_seconds && cue.start < segment.window.end_seconds && cue.content.trim()) : [];
         if (cues.length) {
@@ -214,23 +234,31 @@ export async function researchLongVideo(request: LongVideoRequest, overrides: Pa
       } finally {
         clearTimeout(windowTimer);
         for (const item of [prepared, asset]) if (item) { try { await item.dispose(); } catch { result.warnings.push(`${segment.id}: temporary media cleanup failed.`); } }
-        refreshCoverage();
+        await checkpoint();
       }
     };
-    result.segments = windows.map((window, index) => ({ id: `overview:${index + 1}`, phase: "overview", window, status: "pending", basis: request.mode === "language" ? "audio" : request.mode === "vision" ? "video" : "audio_video", evidence_ids: [], analysis: null }));
-    for (const segment of result.segments) {
+    for (const segment of result.segments.filter((s) => s.phase === "overview")) {
+      if (segment.status === "complete") continue;
       if (context.signal.aborted || downloaded >= result.plan.max_download_bytes) break;
       await analyze(segment, context);
       if (segment.error && ["CONFIGURATION_ERROR", "DEPENDENCY_MISSING", "AUTH_REQUIRED", "ACCESS_BLOCKED"].includes(segment.error)) break;
     }
-    const candidates = result.segments.filter((segment) => segment.phase === "overview" && segment.status === "complete" && (segment.relevance_score ?? 0) > 0).sort((a, b) => (b.relevance_score ?? 0) - (a.relevance_score ?? 0) || a.window.start_seconds - b.window.start_seconds).slice(0, result.plan.max_detail_windows);
+    const candidates = result.segments.filter((segment) => segment.phase === "overview" && segment.status === "complete" && (segment.relevance_score ?? 0) > 0).sort((a, b) => (b.relevance_score ?? 0) - (a.relevance_score ?? 0) || a.window.start_seconds - b.window.start_seconds);
     for (const candidate of candidates) {
-      if (context.signal.aborted || downloaded >= result.plan.max_download_bytes) break;
+      if (result.segments.filter((s) => s.phase === "detail").length >= result.plan.max_detail_windows) break;
       const length = Math.min(result.plan.detail_window_seconds, candidate.window.end_seconds - candidate.window.start_seconds);
       const focus = candidate.proposed_focus_offset_seconds ?? (candidate.window.end_seconds - candidate.window.start_seconds) / 2;
       const from = Math.max(candidate.window.start_seconds, Math.min(candidate.window.end_seconds - length, candidate.window.start_seconds + focus - length / 2));
+      if (result.segments.some((s) => s.phase === "detail" && s.window.start_seconds === from && s.window.end_seconds === from + length)) continue;
       const segment: LongVideoSegment = { id: `detail:${result.segments.filter((s) => s.phase === "detail").length + 1}`, phase: "detail", window: { start_seconds: from, end_seconds: from + length }, status: "pending", basis: candidate.basis, evidence_ids: [], analysis: null };
-      result.segments.push(segment); await analyze(segment, context);
+      result.segments.push(segment);
+    }
+    await checkpoint();
+    for (const segment of result.segments.filter((s) => s.phase === "detail")) {
+      if (segment.status === "complete") continue;
+      if (context.signal.aborted || downloaded >= result.plan.max_download_bytes) break;
+      await analyze(segment, context);
+      if (segment.error && ["CONFIGURATION_ERROR", "DEPENDENCY_MISSING", "AUTH_REQUIRED", "ACCESS_BLOCKED"].includes(segment.error)) break;
     }
     refreshCoverage();
     const usable = result.segments.filter((segment) => segment.status === "complete");
@@ -247,7 +275,12 @@ export async function researchLongVideo(request: LongVideoRequest, overrides: Pa
     if (context.signal.aborted) throw context.signal.reason;
     if (result.segments.some((segment) => segment.status === "pending")) result.warnings.push("Some planned overview windows were not processed within the request budget. See coverage.unreviewed and segment status.");
   } catch (error) {
-    result.errors.push(failure(error, stage, context)); result.status = result.evidence.some((e) => e.kind !== "metadata") ? "partial" : "unavailable";
+    const issue = failure(error, stage, context);
+    if (continuation.previous && !checkpointAllowed && issue.code !== "SESSION_INCOMPATIBLE") {
+      const processing = result.processing;
+      Object.assign(result, structuredClone(continuation.previous), { processing, errors: [], warnings: [...continuation.previous.warnings, "Source revalidation failed; the saved reports are retained without changing the session."] });
+    }
+    result.errors.push(issue); result.status = result.evidence.some((e) => e.kind !== "metadata") ? "partial" : "unavailable";
   } finally {
     clearTimeout(timer); refreshCoverage();
     if (!result.analysis) {
@@ -256,6 +289,11 @@ export async function researchLongVideo(request: LongVideoRequest, overrides: Pa
     }
     result.warnings.push("All findings and segment reports are model interpretations. Coverage and citation IDs validate processing structure, not factual accuracy or exact event timestamps.");
     result.warnings = [...new Set(result.warnings)]; result.processing.duration_ms = Math.round(performance.now() - started);
+    // Even a cancelled invocation persists its last coherent result. Invalid seeds never replace saved work.
+    if (!result.errors.some((e) => ["SESSION_INCOMPATIBLE", "SESSION_SAVE_FAILED"].includes(e.code))) {
+      try { await checkpoint(); }
+      catch (error) { result.errors.push(failure(error, "checkpoint", context)); result.status = result.evidence.some((e) => e.kind !== "metadata") ? "partial" : "unavailable"; }
+    }
   }
   return result;
 }
