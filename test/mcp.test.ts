@@ -1,4 +1,5 @@
 import test from "node:test";
+import { discoveryResultSchema } from "../src/discovery-schema.js";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { promises as fs } from "node:fs";
@@ -37,9 +38,24 @@ test("stdio exposes legacy tools and returns structured routing failures", { tim
     client = await connect(directory);
     const tools = await client.listTools();
     assert.deepEqual(tools.tools.map((tool) => tool.name).sort(), [
-      "analyze_bilibili_video", "analyze_long_video_url", "analyze_video", "analyze_video_url", "analyze_xiaohongshu_note", "delete_research_session", "follow_up_long_video_research", "get_research_session", "inspect_video_window", "list_research_sessions", "resume_long_video_research",
+      "analyze_bilibili_video", "analyze_long_video_url", "analyze_video", "analyze_video_url", "analyze_xiaohongshu_note", "delete_research_session", "discover_bilibili_videos", "follow_up_long_video_research", "get_research_session", "inspect_video_window", "list_research_sessions", "resume_long_video_research",
     ]);
     assert.ok(tools.tools.find((tool) => tool.name === "analyze_video_url")?.outputSchema);
+    const discoveryTool = tools.tools.find((tool) => tool.name === "discover_bilibili_videos");
+    assert.ok(discoveryTool?.outputSchema);
+    assert.equal(discoveryTool.annotations?.readOnlyHint, true);
+    assert.equal(discoveryTool.inputSchema.additionalProperties, false);
+    assert.equal((discoveryTool.inputSchema.properties?.max_candidates as Record<string, unknown>).default, 10);
+    assert.equal((discoveryTool.outputSchema.properties as Record<string, unknown>).evidence, undefined);
+    const invalidDiscovery = CallToolResultSchema.parse(await client.callTool({ name: "discover_bilibili_videos", arguments: { question: "x".repeat(201) } }));
+    assert.equal(invalidDiscovery.isError, true);
+    const discovery = discoveryResultSchema.parse(invalidDiscovery.structuredContent);
+    assert.equal(discovery.status, "unavailable"); assert.equal(discovery.errors[0].code, "INVALID_REQUEST");
+    assert.equal(discovery.processing.queries_attempted, 0);
+    assert.deepEqual(JSON.parse(textContent(invalidDiscovery)), invalidDiscovery.structuredContent);
+    const extraDiscovery = CallToolResultSchema.parse(await client.callTool({ name: "discover_bilibili_videos", arguments: { question: "Find attention lectures", pages: 100 } }));
+    assert.equal(extraDiscovery.isError, true);
+    assert.match(textContent(extraDiscovery), /unrecognized|validation|unknown/i);
     const longTool = tools.tools.find((tool) => tool.name === "analyze_long_video_url");
     assert.ok(longTool?.outputSchema);
     assert.equal((longTool.inputSchema.properties?.segment_seconds as Record<string, unknown>).default, 600);
