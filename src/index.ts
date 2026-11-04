@@ -14,6 +14,9 @@ import { longVideoResultShape } from "./long-video-schema.js";
 import { researchResultShape } from "./result-schema.js";
 import { discoverBilibiliVideos } from "./discovery.js";
 import { discoveryResultShape } from "./discovery-schema.js";
+import { compareResearchMaterials } from "./comparison.js";
+import { comparisonInputSchema, comparisonResultShape } from "./comparison-schema.js";
+import type { ComparisonInput } from "./comparison-contracts.js";
 
 const server = new McpServer({ name: "catalyst-video-research-mcp", version: "0.1.0-preview.1" });
 
@@ -40,6 +43,23 @@ const sourceQualitySchema = z.object({
   fps: z.union([z.literal(30), z.literal(60)]).optional().describe("Target source-video frame rate. Overrides the profile preset."),
   on_unavailable: z.enum(["error", "warn"]).default("error").describe("error refuses an unavailable target instead of silently downgrading; warn allows a reported fallback."),
 }).optional().describe("Optional source acquisition quality. It affects platform downloads, not local-video tools.");
+
+server.registerTool("compare_research_materials", {
+  title: "Compare Selected Research Evidence",
+  description: "Compare two or three explicitly selected, already-read research results or local long-video sessions. Pass video/note results or the full Xiaohongshu wrapper as result; each material is validated separately. One text-model call compares claims with exact quoted excerpts, retaining video source windows or image page numbers. Original final answers are excluded; earlier visual Findings are eligible only for the same question and remain derived observations. Missing evidence is distinct from contradiction. Source identities do not establish independent corroboration. No platform fetches, media, ASR, automatic research, or comparison persistence.",
+  inputSchema: z.strictObject({
+    question: z.string().trim().min(3).max(2000),
+    materials: z.array(comparisonInputSchema).min(2).max(3).describe("Two or three selected full structured research results (video/note/xiaohongshu) or session references. Discovery candidates are not read evidence."),
+    language: z.string().min(2).max(20).optional(),
+    max_comparisons: z.number().int().min(1).max(8).default(6),
+    timeout_seconds: z.number().min(1).max(300).default(120),
+  }),
+  outputSchema: comparisonResultShape,
+  annotations: { readOnlyHint: true, openWorldHint: true },
+}, async ({ question, materials, language, max_comparisons, timeout_seconds }, extra) => {
+  const comparison = await compareResearchMaterials({ question, materials: materials as unknown as ComparisonInput[], language, maxComparisons: max_comparisons, timeoutSeconds: timeout_seconds }, {}, extra.signal);
+  return { content: [{ type: "text" as const, text: JSON.stringify(comparison, null, 2) }], structuredContent: { ...comparison }, isError: comparison.status === "unavailable" };
+});
 
 server.registerTool("discover_bilibili_videos", {
   title: "Discover Bilibili Video Candidates",
