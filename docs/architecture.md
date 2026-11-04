@@ -10,6 +10,8 @@ Catalyst 将平台获取与研究流程分开：平台 Adapter 提供统一素�
 
 `discover_bilibili_videos` 是研究前的独立候选发现入口。它在查询数、返回数、响应字节和共享期限内取得匿名搜索元数据，规范化来源身份并按实际查询排名融合排序；不取得媒体或生成内容证据。宿主规划检索词、选择候选，再调用现有研究入口。搜索命中不代表媒体可访问，稿件级结果也不等于已选定某个分 P。具体契约与联网设计参考见[B 站候选发现](./discovery.md)。
 
+`compare_research_materials` 对宿主选定的 2–3 份已读视频／图文结果或保存会话进行纯文本对照。准备层保留证据的来源、时间／页码及原 ID，并隔离材料命名空间；代码生成连续摘录，模型选择编号并提出逐材料立场，程序回填引用、校验后重算关系和可读答案。源文本可按新问题重新分析，同问题有效视觉 Finding 只作为派生观察。工具不获取新媒体，来源独立性保持未知。具体设计与联网参考见[多来源证据对照](./comparison.md)。
+
 ## 调用路径
 
 ```mermaid
@@ -32,6 +34,12 @@ flowchart TD
   Transform --> Provider[StepFun 或 Gemini]
   Provider --> Result[ResearchResult]
   Result --> MCP
+  Host --> Compare[MCP compare_research_materials]
+  Result --> Host
+  Compare --> Prepared[已选材料和证据定位]
+  Prepared --> TextProvider[一次文本 Provider 对照]
+  TextProvider --> Validated[校验引用和立场 重算对照关系]
+  Validated --> Host
 ```
 
 ## 模块职责
@@ -39,6 +47,10 @@ flowchart TD
 | 模块 | 职责 |
 | --- | --- |
 | `src/contracts.ts` | 平台身份、能力、字幕、媒体、Evidence、Finding、失败和结果契约。 |
+| `src/comparison-contracts.ts` | 所选材料、命名空间证据、逐材料立场及独立对照结果契约。 |
+| `src/comparison-schema.ts` | 对照请求、逐条模型输出和独立结果 Schema。 |
+| `src/comparison-materials.ts` | 已读结果／只读会话准备、身份与覆盖检查、文本和派生观察的证据映射。 |
+| `src/comparison.ts` | 一次文本对照、逐材料引用校验、关系重算和有效答案构造。 |
 | `src/discovery-contracts.ts` | 候选、查询执行、排名依据、发现预算与独立结果契约。 |
 | `src/discovery-schema.ts` | 发现工具的严格请求校验及独立结果 Schema。 |
 | `src/discovery.ts` | 有界查询执行、状态保留、身份去重、RRF 排序与候选返回上限。 |
@@ -97,6 +109,8 @@ flowchart TD
 不要求结构化模型输出成功才能保留已有证据。非结构化返回会保留分析文本并给出告警，结果通常为 `partial`。媒体或 Provider 失败时，已获取的元数据和可用证据继续返回，错误记录阶段、代码和重试性质。
 
 ## 质量与预算
+
+多来源对照使用独立的结果契约。其 `source_text` 引用已有字幕／ASR／正文／OCR，`derived_observation` 引用同问题下通过原引用校验、且只涉及同一定位的视觉 Finding；原 Finding 联合引用不同窗口或页码时整条排除，不复制成伪局部支持。两种证据都保留原有读取限制。代码预先生成最多 180 字符的连续摘录目录，模型选择编号，程序把原文和原证据定位回填到支持或反驳立场，再验证归属和精确子串。程序重算共同说法、分歧、单来源和证据不足；原最终 `analysis` 不进入模型提示。本轮只读已有会话，输入最多 2 MiB，准备提示最多 200,000 字符，最多一次文本 Provider 调用，不创建新的比较会话或自动发起资料补读。引用结构校验不能代替语义核验，跨来源的独立性不作推断。
 
 通用入口在未指定 `source_quality` 时使用可用源并报告实际质量。视觉和多模态下载默认优先选择不超过 1080p 的格式，源回退以实际报告为准；媒体文件预算默认 256 MiB，可通过 `CATALYST_MAX_MEDIA_MB` 调整。显式质量请求沿用 BVR 的标准档、高档和自定义档，目标不满足时默认报错。旧 B 站工具保留默认严格 1080p30 的语义。
 

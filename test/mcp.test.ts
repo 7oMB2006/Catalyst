@@ -1,5 +1,6 @@
 import test from "node:test";
 import { discoveryResultSchema } from "../src/discovery-schema.js";
+import { comparisonResultSchema } from "../src/comparison-schema.js";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { promises as fs } from "node:fs";
@@ -38,9 +39,18 @@ test("stdio exposes legacy tools and returns structured routing failures", { tim
     client = await connect(directory);
     const tools = await client.listTools();
     assert.deepEqual(tools.tools.map((tool) => tool.name).sort(), [
-      "analyze_bilibili_video", "analyze_long_video_url", "analyze_video", "analyze_video_url", "analyze_xiaohongshu_note", "delete_research_session", "discover_bilibili_videos", "follow_up_long_video_research", "get_research_session", "inspect_video_window", "list_research_sessions", "resume_long_video_research",
+      "analyze_bilibili_video", "analyze_long_video_url", "analyze_video", "analyze_video_url", "analyze_xiaohongshu_note", "compare_research_materials", "delete_research_session", "discover_bilibili_videos", "follow_up_long_video_research", "get_research_session", "inspect_video_window", "list_research_sessions", "resume_long_video_research",
     ]);
     assert.ok(tools.tools.find((tool) => tool.name === "analyze_video_url")?.outputSchema);
+    const comparisonTool = tools.tools.find((tool) => tool.name === "compare_research_materials");
+    assert.ok(comparisonTool?.outputSchema); assert.equal(comparisonTool.annotations?.readOnlyHint, true);
+    assert.equal(comparisonTool.inputSchema.additionalProperties, false);
+    const missingComparison = CallToolResultSchema.parse(await client.callTool({ name: "compare_research_materials", arguments: { question: "What claims do these materials share?", materials: [{ kind: "session", session_id: randomUUID() }, { kind: "session", session_id: randomUUID() }] } }));
+    assert.equal(missingComparison.isError, true);
+    const comparison = comparisonResultSchema.parse(missingComparison.structuredContent);
+    assert.equal(comparison.status, "unavailable"); assert.equal(comparison.materials.length, 2);
+    assert.equal(comparison.processing.model_calls, 0); assert.equal(comparison.source_independence, "not_established");
+    assert.deepEqual(JSON.parse(textContent(missingComparison)), missingComparison.structuredContent);
     const discoveryTool = tools.tools.find((tool) => tool.name === "discover_bilibili_videos");
     assert.ok(discoveryTool?.outputSchema);
     assert.equal(discoveryTool.annotations?.readOnlyHint, true);

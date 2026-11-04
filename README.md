@@ -84,6 +84,27 @@ The host supplies up to three short queries. If omitted, the question itself is 
 
 This is an experimental anonymous Bilibili Web search path, not a stable official API. Access restrictions can produce partial or unavailable results; blocking, authentication requirements and rate limits stop remaining queries. Every result declares `search_exhaustive: false`, and reports candidates omitted by the requested return limit. See the [discovery design, references and acceptance criteria](./docs/discovery.md).
 
+## Compare selected research material
+
+After reading sources, the host can compare 2–3 selected results for shared statements, differences and evidence gaps. Video results, Xiaohongshu image/text research and saved long-video sessions can be combined:
+
+```text
+compare_research_materials({
+  question: "Where do these sources agree or differ about the conditions for efficient attention?",
+  materials: [
+    { kind: "video", result: <complete existing video research result> },
+    { kind: "xiaohongshu", result: <complete existing Xiaohongshu research result> }
+  ],
+  language: "en",
+  max_comparisons: 6,
+  timeout_seconds: 120
+})
+```
+
+Each comparison retains its material identity, original evidence IDs and video times or image-page numbers. Code prepares contiguous source excerpts; the model selects excerpt IDs, and code attaches the original quote and source. This avoids having the model rewrite or join quotations while preserving exact-substring validation. Unaddressed topics and insufficient evidence have separate states; repeated sources do not add independent corroboration, and source independence remains unestablished.
+
+Comparison reads supplied results and makes at most one text-provider call. Source captions, ASR, body text and OCR can answer a new question; prior visual observations are reused only for the same original question, and old final answers are excluded. Input is limited to 2 MiB and the prepared prompt to 200,000 characters; excess material is rejected explicitly. Valid citations establish structure rather than semantic correctness, and comparisons remain `unverified`. See [comparison design and references](./docs/comparison.md) for material types and session references.
+
 ## Research a video
 
 ```text
