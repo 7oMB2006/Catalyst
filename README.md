@@ -128,6 +128,21 @@ The planner returns gaps, action keys, source time windows or original image pag
 
 `original` inherits each material's original evidence mode. `requested` checks its original requested scope; explicitly choose `coverage_target: "source"` to extend to a known full video or note. Different questions invalidate prior question-specific visual coverage, while original source text remains reusable. Repeated material coverage is merged. A comparison's `single_source` or `not_addressed` state does not itself trigger more research; extra Bilibili discovery requires explicit `search_queries`. Structured source-access restrictions and attempted action keys stop automatic retry suggestions; provider authentication errors do not establish source blocking. See [follow-up planning design, budgets and references](./docs/research-followup-plan.md).
 
+## Execute one selected follow-up round
+
+The reference host saves an immutable follow-up plan and executes only explicitly selected action keys through the existing MCP server:
+
+```bash
+npm run build
+npm run task -- create /absolute/path/task-input.json
+npm run task -- run TASK_UUID SELECTED_ACTION_KEY
+npm run task -- run TASK_UUID
+```
+
+The input contains `plan` (the TypeScript planner request with camelCase settings and 2–3 existing materials), plus optional `totalTimeoutSeconds`. The first run fixes the selected keys; later runs continue that selection and skip recorded results. Intent and timeout allowance are saved before dispatch. Lost acknowledgements or interrupted calls become `unknown` and require host inspection; they are never automatically replayed. Results retain `partial` and `unavailable` research states.
+
+Tasks live in `~/.catalyst/tasks` or `CATALYST_TASK_DIR`, separately from video sessions. Defaults reserve each action's entire timeout against a persistent 900-second allowance, without refunds; this is not a monetary or download budget. Use `show`, `list` and `delete` to manage records. Hosts can embed the exported runner using their own MCP connection. Source selection, subsequent planning and comparison remain with the host. See [task inputs, recovery boundaries and design references](./docs/research-tasks.md).
+
 ## Research a video
 
 ```text

@@ -23,6 +23,16 @@ function issue(error: unknown, context: ExecutionContext): DiscoveryFailure {
 }
 const stopping = { SEARCH_BLOCKED: "blocked", SEARCH_AUTH_REQUIRED: "auth_required", SEARCH_RATE_LIMITED: "rate_limited", TIMEOUT: "deadline", CANCELLED: "cancelled" } as const;
 
+/** Match discovery's query identity while retaining the first spelling and query order. */
+export function normalizeDiscoveryQueries(queries: readonly string[]): string[] {
+  const distinct = new Map<string, string>();
+  for (const raw of queries) {
+    const query = raw.normalize("NFKC").trim().replace(/\s+/g, " "), key = query.toLowerCase();
+    if (!distinct.has(key)) distinct.set(key, query);
+  }
+  return [...distinct.values()];
+}
+
 /** Candidate discovery never reads content or invokes a research/model/media pipeline. */
 export async function discoverBilibiliVideos(request: DiscoveryRequest, overrides: Partial<DiscoveryDependencies> = {}, externalSignal?: AbortSignal): Promise<DiscoveryResult> {
   const at = performance.now(), parsed = discoveryRequestSchema.safeParse(request);
@@ -38,9 +48,7 @@ export async function discoverBilibiliVideos(request: DiscoveryRequest, override
     result.processing.duration_ms = Math.round(performance.now() - at); return result;
   }
   const input = parsed.data;
-  const distinct = new Map<string, string>();
-  for (const query of input.queries ?? [input.question.normalize("NFKC").replace(/\s+/g, " ")]) if (!distinct.has(query.toLowerCase())) distinct.set(query.toLowerCase(), query);
-  const queries = [...distinct.values()];
+  const queries = normalizeDiscoveryQueries(input.queries ?? [input.question]);
   result.question = input.question;
   result.limits.max_candidates = input.maxCandidates; result.limits.timeout_seconds = input.timeoutSeconds;
   result.queries = queries.map((query, index) => ({ id: `query:${index + 1}`, query, status: "not_run", requests_started: 0, pages_received: 0, rows_received: 0, rows_discarded: 0, has_more: null, error: null }));

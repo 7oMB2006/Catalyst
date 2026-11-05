@@ -16,6 +16,8 @@ Catalyst 将平台获取与研究流程分开：平台 Adapter 提供统一素�
 
 ## 调用路径
 
+参考宿主 `research-task-cli.ts` 通过 MCP 客户端调用现有 stdio 服务，不增加服务器工具。`research-tasks.ts` 将固定计划、明确选定的动作、调用前的意图及期限预留、调用后的结构化结果保存到独立任务记录。`research-task-store.ts` 提供原子文件、版本和进程锁；恢复跳过已记录结果，遗留在途调用转为未知并停止。宿主继续承担下一轮选择和对照，详见[一轮补读与恢复](./research-tasks.md)。
+
 ```mermaid
 flowchart TD
   Host[宿主 Agent] --> MCP[MCP analyze_video_url]

@@ -51,6 +51,7 @@ function canonical(raw: string, platform: string, id: string): string {
   }
   invalid("The material platform is unsupported.");
 }
+export { canonical as canonicalResearchSourceUrl };
 function text(value: string | undefined): string {
   if (typeof value !== "string" || !value.trim()) invalid("A reusable language evidence item has no text.");
   if (value.length > MAX_TEXT) invalid("A material evidence text exceeds 32,000 characters.", "MATERIAL_BUDGET_EXCEEDED");
