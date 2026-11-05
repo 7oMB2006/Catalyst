@@ -5,12 +5,13 @@ import { randomUUID } from "node:crypto";
 import { promises as fs } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
+import { pathToFileURL } from "node:url";
 import type { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { createMcpResearchTaskHost } from "../src/research-task-cli.js";
 
 async function cli(args: string[], directory: string, hook?: string): Promise<{ code: number; stdout: string; stderr: string }> {
   return new Promise((resolve) => {
-    execFile(process.execPath, [...(hook ? ["--import", hook] : []), "--import", "tsx", "src/research-task-cli.ts", ...args], {
+    execFile(process.execPath, [...(hook ? ["--import", pathToFileURL(hook).href] : []), "--import", "tsx", "src/research-task-cli.ts", ...args], {
       cwd: process.cwd(), timeout: 15_000, maxBuffer: 512 * 1024,
       env: { ...process.env, CATALYST_TASK_DIR: directory, CODEX_VIDEO_PROVIDER: "unsupported-provider-must-not-be-used" },
     }, (error, stdout, stderr) => resolve({ code: error ? typeof error.code === "number" ? error.code : 1 : 0, stdout, stderr }));
@@ -59,7 +60,7 @@ test("rejected MCP requests preserve the host's cancellation reason", async () =
 });
 
 test("read-only CLI commands use the local store without starting a tool server", { timeout: 30_000 }, async () => {
-  const directory = await fs.mkdtemp(join(tmpdir(), "catalyst-task-cli-"));
+  const directory = await fs.mkdtemp(join(tmpdir(), "catalyst task cli "));
   const hook = join(directory, "reject-spawn.mjs");
   await fs.writeFile(hook, "import cp from 'node:child_process';import {syncBuiltinESMExports} from 'node:module';cp.spawn=()=>{throw new Error('Unexpected server spawn')};syncBuiltinESMExports();\n");
   try {
@@ -82,7 +83,7 @@ test("read-only CLI commands use the local store without starting a tool server"
 });
 
 test("invalid and oversized task inputs are rejected before connecting to MCP", { timeout: 30_000 }, async () => {
-  const directory = await fs.mkdtemp(join(tmpdir(), "catalyst-task-cli-input-"));
+  const directory = await fs.mkdtemp(join(tmpdir(), "catalyst task cli input "));
   const hook = join(directory, "reject-spawn.mjs"), input = join(directory, "input.json");
   await fs.writeFile(hook, "import cp from 'node:child_process';import {syncBuiltinESMExports} from 'node:module';cp.spawn=()=>{throw new Error('Unexpected server spawn')};syncBuiltinESMExports();\n");
   try {
