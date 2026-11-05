@@ -7,6 +7,7 @@ import { sanitizeResearchSnapshot } from "./research-sessions.js";
 import { preparePlanningMaterials } from "./followup-plan-materials.js";
 import type { ComparisonInput } from "./comparison-contracts.js";
 import { canonicalResearchSourceUrl } from "./comparison-materials.js";
+import { normalizeDiscoveryQueries } from "./discovery.js";
 
 function fail(code: string, message: string): never { throw Object.assign(new Error(message), { code }); }
 const now = () => new Date().toISOString();
@@ -39,18 +40,22 @@ export async function createResearchTask(request: CreateResearchTaskRequest, opt
 async function validateOutcome(action: FollowupAction, value: unknown, record: ResearchTaskRecord): Promise<Record<string, unknown>> {
   const result = parseActionResult(action, value);
   if (action.tool === "discover_bilibili_videos") {
-    if (result.question !== record.plan.question || JSON.stringify((result.queries as Array<{query:string}>).map(q => q.query)) !== JSON.stringify(action.arguments.queries)) fail("TASK_RESULT_MISMATCH", "The discovery result does not match the selected question and queries.");
+    if (result.question !== record.plan.question || JSON.stringify((result.queries as Array<{query:string}>).map(q => q.query)) !== JSON.stringify(normalizeDiscoveryQueries(action.arguments.queries as string[]))) fail("TASK_RESULT_MISMATCH", "The discovery result does not match the selected question and queries.");
     return result;
   }
   const leaf = action.tool === "analyze_xiaohongshu_note" ? result.result as Record<string, unknown> | null : result;
   if (!leaf) { if (result.status === "complete") fail("TASK_RESULT_MISMATCH", "A complete result must have a resolved research source."); return result; }
   const request = leaf.request as Record<string, unknown>;
-  if (request.question !== record.plan.question) fail("TASK_RESULT_MISMATCH", "The result answers a different question.");
-  if (action.arguments.url && request.url !== action.arguments.url) fail("TASK_RESULT_MISMATCH", "The result request names a different source URL.");
+  if (typeof request.question !== "string" || request.question.trim() !== record.plan.question) fail("TASK_RESULT_MISMATCH", "The result answers a different question.");
+  const resolved = leaf.video ?? leaf.note;
+  if (action.arguments.url) {
+    const identity = resolved as { platform: string; id: string } | null;
+    const requestUrl = identity && typeof request.url === "string" ? canonicalResearchSourceUrl(request.url, identity.platform, identity.id) : request.url;
+    if (requestUrl !== action.arguments.url) fail("TASK_RESULT_MISMATCH", "The result request names a different source URL.");
+  }
   if (action.tool === "analyze_video_url" && (request.mode !== action.arguments.mode || request.startSeconds !== action.arguments.start_seconds || request.endSeconds !== action.arguments.end_seconds)) fail("TASK_RESULT_MISMATCH", "The result does not match the selected video window or mode.");
   if (action.tool === "analyze_xiaohongshu_note" && (request.mode !== action.arguments.mode || request.startPage !== action.arguments.start_page || request.endPage !== action.arguments.end_page)) fail("TASK_RESULT_MISMATCH", "The result does not match the selected note pages or mode.");
   if (action.tool === "resume_long_video_research" && (result.session as { id?: string } | undefined)?.id !== action.arguments.session_id) fail("TASK_RESULT_MISMATCH", "The result names a different saved session.");
-  const resolved = leaf.video ?? leaf.note;
   if (!resolved) { if (result.status === "complete" || leaf.status === "complete" || (leaf.evidence as unknown[]).length) fail("TASK_RESULT_MISMATCH", "A complete or evidence-bearing result must have a resolved source."); return result; }
   // Normalize source metadata without imposing the comparison tool's 80-item evidence budget.
   const metadata = { ...leaf, evidence: [], findings: [], plan: undefined };
