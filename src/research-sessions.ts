@@ -56,7 +56,7 @@ function safeUrl(value: string): string {
 }
 
 /** A persisted snapshot contains research text and public identities, never acquisition inputs. */
-export function sanitizeSessionResult(result: LongVideoResult): LongVideoResult {
+export function sanitizeResearchSnapshot<T>(result: T): T {
   const visit = (value: unknown, key = ""): unknown => {
     if (/(?:api.?key|authorization|cookie|secret|password|token|signature|headers|media.?url|download.?url|path$|directory)/i.test(key)) return "[redacted]";
     if (typeof value === "string") return ["url", "sourceUrl", "canonicalUrl"].includes(key) ? safeUrl(redactSecrets(value)) : redactSensitiveText(value);
@@ -64,8 +64,9 @@ export function sanitizeSessionResult(result: LongVideoResult): LongVideoResult 
     if (value && typeof value === "object") return Object.fromEntries(Object.entries(value).map(([k, v]) => [k, visit(v, k)]));
     return value;
   };
-  return visit(result) as LongVideoResult;
+  return visit(result) as T;
 }
+export function sanitizeSessionResult(result: LongVideoResult): LongVideoResult { return sanitizeResearchSnapshot(result); }
 function redactSecrets(value: string): string {
   for (const [key, secret] of Object.entries(process.env)) if (/(?:KEY|TOKEN|SECRET|PASSWORD|COOKIE)/i.test(key) && secret && secret.length > 5) value = value.split(secret).join("[redacted]");
   return value;

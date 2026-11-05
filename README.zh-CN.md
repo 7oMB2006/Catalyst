@@ -130,6 +130,21 @@ plan_research_followup({
 
 `original` 继承各材料原证据模式；`requested` 只检查原请求范围，明确设置 `coverage_target: "source"` 才扩展到已知完整视频或整篇笔记。换问题后旧视觉观察不算本轮视觉覆盖，原始文字仍可复用；重复材料的覆盖先合并。对照中的 `single_source` 或 `not_addressed` 不会自动触发补读，额外 B 站发现必须由宿主提供 `search_queries`。结构化来源访问限制和已尝试动作 key 会停止重复建议；模型鉴权错误不能证明来源被封锁。详见[补读规划设计、预算与联网参考](./docs/research-followup-plan.md)。
 
+## 执行一轮选定补读
+
+参考宿主保存固定补读计划，只通过现有 MCP 服务执行宿主明确选择的动作 key：
+
+```bash
+npm run build
+npm run task -- create /absolute/path/task-input.json
+npm run task -- run TASK_UUID SELECTED_ACTION_KEY
+npm run task -- run TASK_UUID
+```
+
+输入包含 `plan`（TypeScript 规划请求，使用 camelCase 参数及 2–3 份已有材料），可选 `totalTimeoutSeconds`。首次执行固定所选 key，后续继续同一组动作并跳过已记录结果。调用前先保存意图和期限额度；中断或丢失确认的调用转为 `unknown`，交宿主核查，不会自动重放。研究结果的 `partial` 和 `unavailable` 状态继续保留。
+
+任务保存在 `~/.catalyst/tasks` 或 `CATALYST_TASK_DIR`，与视频 session 分开。默认执行额度为 900 秒，每个动作按完整声明期限预留，不退款；这不是费用或下载预算。使用 `show`、`list` 和 `delete` 管理记录。其他宿主也可用自己的 MCP 连接嵌入执行器；来源选择、后续规划与对照继续由宿主负责。详见[任务输入、恢复边界与联网设计](./docs/research-tasks.md)。
+
 ## 研究视频
 
 ```text
