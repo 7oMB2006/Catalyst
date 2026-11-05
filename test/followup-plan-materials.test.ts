@@ -9,6 +9,8 @@ import type { ComparisonInput } from "../src/comparison-contracts.js";
 import type { LongVideoRequest, LongVideoResult } from "../src/long-video-contracts.js";
 import { preparePlanningMaterials } from "../src/followup-plan-materials.js";
 import { ResearchSessionStore, type ResearchSessionRecord } from "../src/research-session-store.js";
+import { sessionCompatibility } from "../src/research-sessions.js";
+import { planResearchFollowup } from "../src/followup-plan.js";
 
 const QUESTION = "Explain the attention diagram", BV = "BV1DTxXzUEvW", CID = "38253823575", NOTE = "6aaaa3300000000025035966";
 const context = (): ExecutionContext => ({ signal: new AbortController().signal, deadlineMs: Date.now() + 10_000 });
@@ -44,8 +46,8 @@ function longVideo(complete = false): LongVideoResult {
     coverage: { overview: complete ? [first, second] : [first], detail: [], unreviewed: complete ? [] : [second], overview_complete: complete, limitations: [] },
   };
 }
-async function save(store: ResearchSessionStore, result: LongVideoResult): Promise<ResearchSessionRecord> {
-  const now = new Date().toISOString(), record: ResearchSessionRecord = { schema_version: "1", id: store.newId(), revision: 1, created_at: now, updated_at: now, compatibility: "a-different-provider-is-safe-for-read-only-planning", request: result.request, result };
+async function save(store: ResearchSessionStore, result: LongVideoResult, compatibility = sessionCompatibility(result.request)): Promise<ResearchSessionRecord> {
+  const now = new Date().toISOString(), record: ResearchSessionRecord = { schema_version: "1", id: store.newId(), revision: 1, created_at: now, updated_at: now, compatibility, request: result.request, result };
   await store.withLock(record.id, () => store.save(record, null)); return record;
 }
 
@@ -204,6 +206,55 @@ test("only actual loaded, same-question unfinished sessions can resume, using on
   } finally {
     ResearchSessionStore.prototype.load = originalLoad;
     if (oldDirectory === undefined) delete process.env.CATALYST_SESSION_DIR; else process.env.CATALYST_SESSION_DIR = oldDirectory;
+    await fs.rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("saved processing compatibility controls resume while retained evidence stays readable", async (t) => {
+  const directory = await fs.mkdtemp(join(tmpdir(), "catalyst-plan-compatibility-"));
+  const defaults = { CODEX_VIDEO_PROVIDER: "stepfun", STEPFUN_VIDEO_MODEL: "step-3.7-flash", STEPFUN_ASR_MODEL: "stepaudio-2.5-asr", STEPFUN_ASR_LANGUAGE: "zh", STEPFUN_BASE_URL: "https://api.stepfun.com/v1", CATALYST_SESSION_DIR: directory };
+  const previous = Object.fromEntries(Object.keys(defaults).map((key) => [key, process.env[key]]));
+  Object.assign(process.env, defaults);
+  try {
+    const store = new ResearchSessionStore(directory), saved = await save(store, longVideo());
+    const before = await fs.readFile(join(directory, `${saved.id}.json`), "utf8");
+    const plan = (sessionId = saved.id) => planResearchFollowup({ question: QUESTION, materials: [{ kind: "session", session_id: sessionId }], videoWindowSeconds: 600 });
+    assert.equal((await plan()).next_actions[0].tool, "resume_long_video_research");
+    for (const [name, changes] of [
+      ["provider", { CODEX_VIDEO_PROVIDER: "gemini" }],
+      ["invalid provider configuration", { CODEX_VIDEO_PROVIDER: "unsupported-provider" }],
+      ["video model", { STEPFUN_VIDEO_MODEL: "different-video-model" }],
+      ["ASR model", { STEPFUN_ASR_MODEL: "different-asr-model" }],
+      ["effective ASR language", { STEPFUN_ASR_LANGUAGE: "en" }],
+      ["provider endpoint", { STEPFUN_BASE_URL: "https://provider.example/v1" }],
+    ] as const) await t.test(name, async () => {
+      Object.assign(process.env, defaults, changes);
+      const result = await plan(), material = result.materials[0];
+      assert.equal(result.status, "planned"); assert.equal(material.eligible, true); assert.equal(material.can_resume, false);
+      assert.equal(material.session_id, saved.id); assert.equal(material.source_status, "partial");
+      assert.deepEqual(material.visual_windows, [{ start_seconds: 0, end_seconds: 600 }]);
+      assert.equal(result.next_actions.length, 1); assert.equal(result.next_actions[0].tool, "analyze_video_url");
+      assert.equal(result.next_actions[0].arguments.mode, "vision");
+      assert.deepEqual([result.next_actions[0].arguments.start_seconds, result.next_actions[0].arguments.end_seconds], [600, 1200]);
+      assert.ok(material.limitations.some((value) => /processing settings/.test(value)));
+      assert.equal(await fs.readFile(join(directory, `${saved.id}.json`), "utf8"), before);
+    });
+    Object.assign(process.env, defaults);
+    const legacy = await save(store, longVideo(), "previous-engine-compatibility");
+    const oldEngine = await plan(legacy.id);
+    assert.equal(oldEngine.materials[0].eligible, true); assert.equal(oldEngine.materials[0].can_resume, false);
+    assert.equal(oldEngine.next_actions[0].tool, "analyze_video_url");
+
+    const explicit = longVideo(); explicit.request.language = "en";
+    const explicitSaved = await save(store, explicit);
+    process.env.STEPFUN_ASR_LANGUAGE = "ja";
+    assert.equal((await plan(explicitSaved.id)).next_actions[0].tool, "resume_long_video_research");
+    Object.assign(process.env, defaults);
+    assert.equal((await plan()).next_actions[0].tool, "resume_long_video_research");
+    process.env.STEPFUN_BASE_URL = " https://api.stepfun.com/v1/// ";
+    assert.equal((await plan()).next_actions[0].tool, "resume_long_video_research");
+  } finally {
+    for (const [key, value] of Object.entries(previous)) { if (value === undefined) delete process.env[key]; else process.env[key] = value; }
     await fs.rm(directory, { recursive: true, force: true });
   }
 });

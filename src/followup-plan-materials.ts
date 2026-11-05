@@ -6,6 +6,7 @@ import type { LongVideoRequest, LongVideoResult } from "./long-video-contracts.j
 import type { PlanningMaterial, PlanWindow } from "./followup-plan-contracts.js";
 import { prepareComparisonMaterials } from "./comparison-materials.js";
 import { ResearchSessionStore, type ResearchSessionRecord } from "./research-session-store.js";
+import { sessionCompatibility } from "./research-sessions.js";
 import { longVideoResultSchema } from "./long-video-schema.js";
 import { validateContinuation } from "./long-video-continuation.js";
 import { redactSensitiveText } from "./video-analysis.js";
@@ -128,8 +129,13 @@ export async function preparePlanningMaterials(inputs: ComparisonInput[], questi
           material.visual_windows = uniqueWindows(raw.evidence.filter((e) => ["visual", "multimodal"].includes(e.kind) && e.time_range).map((e) => e.time_range!), requested);
         }
         if (snapshots.has(index)) {
-          material.session_id = snapshots.get(index)!.id;
-          material.can_resume = !!validLong && validLong.segments.some((s) => s.status !== "complete") && raw.request.question.trim() === question.trim();
+          const record = snapshots.get(index)!;
+          material.session_id = record.id;
+          if (validLong && validLong.segments.some((s) => s.status !== "complete") && raw.request.question.trim() === question.trim()) {
+            try { material.can_resume = record.compatibility === sessionCompatibility(record.request); }
+            catch { material.can_resume = false; }
+            if (!material.can_resume) material.limitations.push("The saved session is incompatible with the current processing settings. Retained evidence stays readable; use independent bounded reading or restore compatible settings before resuming.");
+          }
           if (validLong) material.resume_window_seconds = Math.max(validLong.plan!.segment_seconds, validLong.plan!.detail_window_seconds);
         }
       } else {
@@ -139,8 +145,8 @@ export async function preparePlanningMaterials(inputs: ComparisonInput[], questi
         material.requested_pages = raw.note.imageCount ? { start_page: raw.request.startPage ?? 1, end_page: raw.request.endPage ?? raw.note.imageCount } : null;
         material.visual_question_changed = material.original_mode !== "language" && raw.request.question.trim() !== question.trim();
         material.language_pages = [...new Set(evidence.filter((e) => e.basis === "source_text" && e.kind === "image_text" && e.locator.page !== null).map((e) => e.locator.page!))].sort((a, b) => a - b);
-        material.visual_pages = [...new Set(evidence.filter((e) => e.basis === "derived_observation" && e.kind === "image_visual" && e.locator.page !== null).map((e) => e.locator.page!))].sort((a, b) => a - b);
-        if (!material.visual_question_changed && material.original_mode !== "language" && raw.status === "complete" && !raw.errors.length) material.visual_pages = [...new Set(raw.evidence.filter((e) => e.kind === "image_visual" && e.page !== null).map((e) => e.page!))].sort((a, b) => a - b);
+        // Each retained observation has already passed source/page validation, even if later batches or synthesis failed.
+        material.visual_pages = !material.visual_question_changed && material.original_mode !== "language" ? [...new Set(raw.evidence.filter((e) => e.kind === "image_visual" && e.page !== null).map((e) => e.page!))].sort((a, b) => a - b) : [];
       }
       material.eligible = true;
       material.limitations.push("Planning coverage describes retained language evidence or validated, same-question visual processing ranges. It does not establish semantic sufficiency, exhaustive inspection, independent verification, or current media access.");
