@@ -17,6 +17,8 @@ import { discoveryResultShape } from "./discovery-schema.js";
 import { compareResearchMaterials } from "./comparison.js";
 import { comparisonInputSchema, comparisonResultShape } from "./comparison-schema.js";
 import type { ComparisonInput } from "./comparison-contracts.js";
+import { planResearchFollowup } from "./followup-plan.js";
+import { followupPlanRequestSchema, followupPlanResultShape } from "./followup-plan-schema.js";
 
 const server = new McpServer({ name: "catalyst-video-research-mcp", version: "0.1.0-preview.1" });
 
@@ -43,6 +45,40 @@ const sourceQualitySchema = z.object({
   fps: z.union([z.literal(30), z.literal(60)]).optional().describe("Target source-video frame rate. Overrides the profile preset."),
   on_unavailable: z.enum(["error", "warn"]).default("error").describe("error refuses an unavailable target instead of silently downgrading; warn allows a reported fallback."),
 }).optional().describe("Optional source acquisition quality. It affects platform downloads, not local-video tools.");
+
+const planInput = followupPlanRequestSchema.shape;
+server.registerTool("plan_research_followup", {
+  title: "Plan Bounded Follow-up Research",
+  description: "Check one to three already-read research results or saved long-video sessions for missing evidence coverage and return bounded, typed calls to existing tools. The host selects and executes suggestions, retaining new evidence and supplying round/history on the next plan. Defaults preserve each material's original requested scope and evidence mode. Changing a question invalidates old visual coverage, while source text remains reusable. Explicit search_queries may request Bilibili discovery; single-source or not-addressed claims do not themselves trigger more research. A deterministic read-only plan: no models, platform requests, media acquisition, action execution or persistence. A stopped plan does not establish semantic sufficiency.",
+  inputSchema: z.strictObject({
+    question: planInput.question.describe("Current research question. Original source text is reusable; question-specific visual observations are not."),
+    materials: planInput.materials.describe("One to three full video/note/xiaohongshu research results or saved session references. Discovery candidates and final answers alone are not read evidence."),
+    evidence_requirement: planInput.evidenceRequirement.describe("original inherits each material's mode; explicitly select language, vision or multimodal when the question requires different channels."),
+    coverage_target: planInput.coverageTarget.describe("requested preserves prior selected time/page scopes; source explicitly extends to the known complete video or note."),
+    search_queries: planInput.searchQueries.describe("Optional explicit host queries for extra Bilibili discovery. Omit to avoid planning search."),
+    discovery: planInput.discovery.describe("Optional previous discovery result, used only to preserve search access restrictions."),
+    max_actions: planInput.maxActions.describe("Maximum actions returned in this plan."),
+    max_sources: planInput.maxSources.describe("Maximum known sources used by this plan's reading actions; uninspected search candidates are not read sources."),
+    max_rounds: planInput.maxRounds.describe("Host-managed total round limit; planning never increments it automatically."),
+    round: planInput.round.describe("Current host-managed round, starting at one."),
+    attempted_action_keys: planInput.attemptedActionKeys.describe("Keys of actions already attempted by the host; identical actions are not automatically retried."),
+    video_window_seconds: planInput.videoWindowSeconds.describe("Maximum seconds in each proposed video window; saved-session resumes must also fit their original planned window sizes."),
+    note_pages_per_action: planInput.notePagesPerAction.describe("Maximum original image pages per proposed note action."),
+    action_timeout_seconds: planInput.actionTimeoutSeconds.describe("Execution timeout placed in suggested tool arguments; no execution is performed by planning."),
+    planning_timeout_seconds: planInput.planningTimeoutSeconds.describe("Shared deadline for this read-only material preparation and plan."),
+  }),
+  outputSchema: followupPlanResultShape,
+  annotations: { readOnlyHint: true, openWorldHint: false },
+}, async ({ question, materials, evidence_requirement, coverage_target, search_queries, discovery, max_actions, max_sources, max_rounds, round, attempted_action_keys, video_window_seconds, note_pages_per_action, action_timeout_seconds, planning_timeout_seconds }, extra) => {
+  const plan = await planResearchFollowup({
+    question, materials: materials as unknown as ComparisonInput[], evidenceRequirement: evidence_requirement,
+    coverageTarget: coverage_target, searchQueries: search_queries, discovery, maxActions: max_actions,
+    maxSources: max_sources, maxRounds: max_rounds, round, attemptedActionKeys: attempted_action_keys,
+    videoWindowSeconds: video_window_seconds, notePagesPerAction: note_pages_per_action,
+    actionTimeoutSeconds: action_timeout_seconds, planningTimeoutSeconds: planning_timeout_seconds,
+  }, {}, extra.signal);
+  return { content: [{ type: "text" as const, text: JSON.stringify(plan, null, 2) }], structuredContent: { ...plan }, isError: plan.status === "unavailable" };
+});
 
 server.registerTool("compare_research_materials", {
   title: "Compare Selected Research Evidence",
