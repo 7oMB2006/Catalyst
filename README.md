@@ -16,7 +16,7 @@ Catalyst evolves from [Bilibili Video Research](https://github.com/7oMB2006/Bili
 | Local files | Existing visual analysis and silent-window inspection tools. |
 | Douyin | Acquisition research candidate; no preview support claim. |
 
-Discovery starts with bounded Bilibili candidate search. Cross-platform search, automatic research loops, and long-running task scheduling are later work. The host agent owns query planning, candidate selection, and the overall conversation.
+Discovery starts with bounded Bilibili candidate search. A deterministic follow-up planner can suggest bounded reading or search actions from explicit evidence and coverage targets. The host agent owns query planning, candidate selection, action execution, and the overall conversation. Cross-platform search, automatic research loops, and long-running task scheduling are later work.
 
 ## Installation
 
@@ -104,6 +104,29 @@ compare_research_materials({
 Each comparison retains its material identity, original evidence IDs and video times or image-page numbers. Code prepares contiguous source excerpts; the model selects excerpt IDs, and code attaches the original quote and source. This avoids having the model rewrite or join quotations while preserving exact-substring validation. Unaddressed topics and insufficient evidence have separate states; repeated sources do not add independent corroboration, and source independence remains unestablished.
 
 Comparison reads supplied results and makes at most one text-provider call. Source captions, ASR, body text and OCR can answer a new question; prior visual observations are reused only for the same original question, and old final answers are excluded. Input is limited to 2 MiB and the prepared prompt to 200,000 characters; excess material is rejected explicitly. Valid citations establish structure rather than semantic correctness, and comparisons remain `unverified`. See [comparison design and references](./docs/comparison.md) for material types and session references.
+
+## Plan bounded follow-up research
+
+The host can check 1–3 existing results or saved sessions for missing coverage and ask for typed calls to existing tools:
+
+```text
+plan_research_followup({
+  question: "How does this lesson explain the self-attention computation?",
+  materials: [
+    { kind: "video", result: <complete existing video research result> }
+  ],
+  evidence_requirement: "original",
+  coverage_target: "requested",
+  max_actions: 3,
+  max_rounds: 2,
+  round: 1,
+  attempted_action_keys: []
+})
+```
+
+The planner returns gaps, action keys, source time windows or original image pages, and validated tool arguments. It performs no model calls, platform requests, media acquisition, execution or persistence. The host executes selected `next_actions`, retains the returned evidence, and supplies attempted keys and an updated round when planning again. Defaults limit a plan to three actions across two sources. New video actions cover up to 180 seconds and note actions up to four pages; saved-session resumes may process multiple original windows within their own timeout and acquisition budget.
+
+`original` inherits each material's original evidence mode. `requested` checks its original requested scope; explicitly choose `coverage_target: "source"` to extend to a known full video or note. Different questions invalidate prior question-specific visual coverage, while original source text remains reusable. Repeated material coverage is merged. A comparison's `single_source` or `not_addressed` state does not itself trigger more research; extra Bilibili discovery requires explicit `search_queries`. Structured source-access restrictions and attempted action keys stop automatic retry suggestions; provider authentication errors do not establish source blocking. See [follow-up planning design, budgets and references](./docs/research-followup-plan.md).
 
 ## Research a video
 

@@ -1,6 +1,8 @@
 import test from "node:test";
 import { discoveryResultSchema } from "../src/discovery-schema.js";
 import { comparisonResultSchema } from "../src/comparison-schema.js";
+import { followupPlanResultSchema } from "../src/followup-plan-schema.js";
+import type { ResearchResult } from "../src/contracts.js";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { promises as fs } from "node:fs";
@@ -39,7 +41,7 @@ test("stdio exposes legacy tools and returns structured routing failures", { tim
     client = await connect(directory);
     const tools = await client.listTools();
     assert.deepEqual(tools.tools.map((tool) => tool.name).sort(), [
-      "analyze_bilibili_video", "analyze_long_video_url", "analyze_video", "analyze_video_url", "analyze_xiaohongshu_note", "compare_research_materials", "delete_research_session", "discover_bilibili_videos", "follow_up_long_video_research", "get_research_session", "inspect_video_window", "list_research_sessions", "resume_long_video_research",
+      "analyze_bilibili_video", "analyze_long_video_url", "analyze_video", "analyze_video_url", "analyze_xiaohongshu_note", "compare_research_materials", "delete_research_session", "discover_bilibili_videos", "follow_up_long_video_research", "get_research_session", "inspect_video_window", "list_research_sessions", "plan_research_followup", "resume_long_video_research",
     ]);
     assert.ok(tools.tools.find((tool) => tool.name === "analyze_video_url")?.outputSchema);
     const comparisonTool = tools.tools.find((tool) => tool.name === "compare_research_materials");
@@ -170,6 +172,88 @@ test("stdio exposes legacy tools and returns structured routing failures", { tim
     assert.equal(noteResponse.structuredContent?.result, null);
     assert.equal((noteResponse.structuredContent?.errors as Array<Record<string, unknown>>)[0].code, "INVALID_URL");
     assert.doesNotMatch(JSON.stringify(noteResponse), /fixture-private-token/);
+  } finally {
+    await client?.close();
+    await fs.rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("stdio plans bounded follow-up actions without executing them and retains material failures", { timeout: 20_000 }, async () => {
+  const directory = await fs.mkdtemp(join(tmpdir(), "catalyst-protocol-plan-"));
+  let client: Client | undefined;
+  try {
+    client = await connect(directory);
+    const tools = await client.listTools(), tool = tools.tools.find((item) => item.name === "plan_research_followup");
+    assert.ok(tool?.outputSchema);
+    assert.equal(tool.annotations?.readOnlyHint, true); assert.equal(tool.annotations?.openWorldHint, false);
+    assert.equal(tool.inputSchema.additionalProperties, false);
+    for (const [name, value] of Object.entries({
+      evidence_requirement: "original", coverage_target: "requested", max_actions: 3, max_sources: 2, max_rounds: 2,
+      round: 1, attempted_action_keys: [], video_window_seconds: 180, note_pages_per_action: 4,
+      action_timeout_seconds: 240, planning_timeout_seconds: 10,
+    })) assert.deepEqual((tool.inputSchema.properties?.[name] as Record<string, unknown>).default, value);
+
+    const question = "Which attention mechanism is explained?", url = "https://www.bilibili.com/video/BV1DTxXzUEvW/?p=17";
+    const material: ResearchResult = {
+      schema_version: "1.0", status: "partial",
+      video: { platform: "bilibili", id: "BV1DTxXzUEvW", partId: "38253823575", sourceUrl: `${url}&token=fixture-private-token`, canonicalUrl: url, title: "Attention lesson", durationSeconds: 120 },
+      request: { url, question, mode: "language", startSeconds: 0, endSeconds: 15 },
+      capabilities: { metadata: { status: "available" }, captions: { status: "absent" }, media: { status: "available" }, comments: { status: "disabled" } },
+      evidence: [{ id: "asr:1", kind: "asr", source: { platform: "bilibili", video_id: "BV1DTxXzUEvW", part_id: "38253823575", url, origin: "fixture" }, time_range: { start_seconds: 0, end_seconds: 15 }, time_basis: "source", precision: "requested_window", content: "The lesson explains sparse attention.", limitations: [] }],
+      findings: [], analysis: "OLD_FINAL_ANSWER", warnings: [], errors: [],
+      processing: { duration_ms: 0, stage_durations_ms: {}, provider: "fixture", usage: null },
+    };
+    const arguments_ = { question, materials: [{ kind: "video", result: material }] };
+    const callPlan = async (arguments__: Record<string, unknown>) => {
+      const response = CallToolResultSchema.parse(await client!.callTool({ name: "plan_research_followup", arguments: arguments__ }));
+      const plan = followupPlanResultSchema.parse(response.structuredContent);
+      assert.deepEqual(JSON.parse(textContent(response)), response.structuredContent);
+      assert.equal(plan.processing.model_calls, 0); assert.equal(plan.processing.executed_actions, 0);
+      assert.doesNotMatch(JSON.stringify(response), /fixture-private-token|OLD_FINAL_ANSWER/);
+      return { response, plan };
+    };
+    const original = await callPlan(arguments_);
+    assert.notEqual(original.response.isError, true); assert.equal(original.plan.status, "stopped");
+    assert.equal(original.plan.stop_reason, "no_actionable_gaps"); assert.deepEqual(original.plan.next_actions, []);
+    assert.equal(original.plan.materials[0].source_status, "partial");
+    assert.deepEqual(original.plan.budget, { max_actions: 3, max_sources: 2, max_rounds: 2, round: 1, deferred_gaps: 0 });
+
+    const extendedArguments = {
+      ...arguments_, evidence_requirement: "language", coverage_target: "source", max_actions: 1, max_sources: 1,
+      max_rounds: 3, round: 2, video_window_seconds: 30, note_pages_per_action: 6,
+      action_timeout_seconds: 45, planning_timeout_seconds: 4,
+    };
+    const extended = await callPlan(extendedArguments);
+    assert.notEqual(extended.response.isError, true); assert.equal(extended.plan.status, "planned");
+    assert.equal(extended.plan.stop_reason, "actions_available"); assert.equal(extended.plan.next_actions.length, 1);
+    assert.deepEqual(extended.plan.budget, { max_actions: 1, max_sources: 1, max_rounds: 3, round: 2, deferred_gaps: 0 });
+    const action = extended.plan.next_actions[0];
+    assert.equal(action.tool, "analyze_video_url");
+    assert.deepEqual(action.arguments, { url, question, mode: "language", include_comments: false, start_seconds: 15, end_seconds: 45, timeout_seconds: 45 });
+    assert.match(action.key, /^[a-f\d]{64}$/);
+    assert.ok(action.gap_ids.every((id) => extended.plan.gaps.some((gap) => gap.id === id && gap.kind === "scope_extension")));
+    const attempted = await callPlan({ ...extendedArguments, round: 3, action_timeout_seconds: 60, attempted_action_keys: [action.key] });
+    assert.equal(attempted.plan.stop_reason, "history_exhausted"); assert.deepEqual(attempted.plan.next_actions, []);
+    assert.ok(attempted.plan.gaps.some((gap) => gap.state === "previously_attempted"));
+    const exhausted = await callPlan({ ...extendedArguments, round: 4 });
+    assert.equal(exhausted.plan.stop_reason, "budget_exhausted"); assert.deepEqual(exhausted.plan.materials, []);
+
+    for (const input of [{ kind: "video", result: {} }, { kind: "session", session_id: randomUUID() }]) {
+      const failed = await callPlan({ question, materials: [input] });
+      assert.notEqual(failed.response.isError, true); assert.equal(failed.plan.status, "stopped");
+      assert.equal(failed.plan.stop_reason, "blocked"); assert.deepEqual(failed.plan.next_actions, []);
+      assert.equal(failed.plan.materials[0].eligible, false); assert.ok(failed.plan.materials[0].errors.length);
+      assert.ok(failed.plan.gaps.some((gap) => gap.kind === "invalid_material" && gap.state === "needs_selection"));
+      if (input.kind === "session") assert.ok(failed.plan.materials[0].errors.some((error) => error.code === "SESSION_NOT_FOUND"));
+    }
+    for (const invalidArguments of [
+      { ...arguments_, maxActions: 1 }, { ...arguments_, max_actions: 0 },
+      { ...arguments_, materials: [] }, { ...arguments_, evidence_requirement: "text" },
+    ]) {
+      const response = CallToolResultSchema.parse(await client.callTool({ name: "plan_research_followup", arguments: invalidArguments }));
+      assert.equal(response.isError, true); assert.match(textContent(response), /validation|unrecognized|invalid|too small/i);
+    }
+    assert.deepEqual(await fs.readdir(directory), []);
   } finally {
     await client?.close();
     await fs.rm(directory, { recursive: true, force: true });
