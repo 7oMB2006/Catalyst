@@ -59,8 +59,8 @@ function safeUrl(value: string): string {
 export function sanitizeResearchSnapshot<T>(result: T): T {
   const visit = (value: unknown, key = ""): unknown => {
     if (/(?:api.?key|authorization|cookie|secret|password|token|signature|headers|media.?url|download.?url|path$|directory)/i.test(key)) return "[redacted]";
-    if (typeof value === "string") return ["url", "sourceUrl", "canonicalUrl"].includes(key) ? safeUrl(redactSecrets(value)) : redactSensitiveText(value);
-    if (Array.isArray(value)) return value.map((item) => visit(item));
+    if (typeof value === "string") return ["url", "urls", "sourceUrl", "canonicalUrl"].includes(key) ? safeUrl(redactSecrets(value)) : redactSensitiveText(value);
+    if (Array.isArray(value)) return value.map((item) => visit(item, key));
     if (value && typeof value === "object") return Object.fromEntries(Object.entries(value).map(([k, v]) => [k, visit(v, k)]));
     return value;
   };

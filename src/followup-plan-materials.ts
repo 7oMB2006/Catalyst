@@ -50,7 +50,7 @@ function settings(material: PlanningMaterial, request: ResearchResult["request"]
 }
 
 /** Validate the saved plan independently of the supplied overview-window list. */
-function validateLongPlan(input: unknown, requested: PlanWindow): LongVideoResult {
+export function validateLongPlan(input: unknown, requested: PlanWindow): LongVideoResult {
   const candidate = input as Partial<LongVideoResult>;
   if (!candidate.plan || !Array.isArray(candidate.segments) || candidate.segments.length > 28 || candidate.segments.some((segment) => !segment || !Array.isArray(segment.evidence_ids) || segment.evidence_ids.length > 80) || !Array.isArray(candidate.plan.overview_windows) || candidate.plan.overview_windows.length > 24 || !candidate.coverage || [candidate.coverage.overview, candidate.coverage.detail, candidate.coverage.unreviewed].some((items) => !Array.isArray(items) || items.length > 28)) invalid("The material long-video arrays exceed their planning bounds.");
   const parsed = longVideoResultSchema.safeParse(input);

@@ -41,7 +41,7 @@ test("stdio exposes legacy tools and returns structured routing failures", { tim
     client = await connect(directory);
     const tools = await client.listTools();
     assert.deepEqual(tools.tools.map((tool) => tool.name).sort(), [
-      "analyze_bilibili_video", "analyze_long_video_url", "analyze_video", "analyze_video_url", "analyze_xiaohongshu_note", "compare_research_materials", "delete_research_session", "discover_bilibili_videos", "follow_up_long_video_research", "get_research_session", "inspect_video_window", "list_research_sessions", "plan_research_followup", "resume_long_video_research",
+      "analyze_bilibili_video", "analyze_long_video_url", "analyze_video", "analyze_video_url", "analyze_xiaohongshu_note", "compare_research_materials", "continue_research_task", "delete_research_session", "delete_research_task", "discover_bilibili_videos", "follow_up_long_video_research", "get_research_session", "get_research_task", "inspect_video_window", "list_research_sessions", "list_research_tasks", "plan_research_followup", "resume_long_video_research", "start_research_task",
     ]);
     assert.ok(tools.tools.find((tool) => tool.name === "analyze_video_url")?.outputSchema);
     const comparisonTool = tools.tools.find((tool) => tool.name === "compare_research_materials");

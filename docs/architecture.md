@@ -1,6 +1,6 @@
 # Catalyst 首版架构
 
-Catalyst 将平台获取与研究流程分开：平台 Adapter 提供统一素材，共用 ResearchEngine 决定如何使用字幕、音频和画面，MCP 层向宿主返回结构化结果与可读文本。当前覆盖 B 站、YouTube 和实验性小红书视频笔记，保留 BVR 的旧工具以便渐进迁移。
+Catalyst 将平台获取与研究流程分开：平台 Adapter 提供统一素材，共用 ResearchEngine 决定如何使用字幕、音频和画面，MCP 层向宿主返回结构化结果与可读文本。当前覆盖 B 站、YouTube 和实验性小红书视频／图文笔记，保留 BVR 的旧工具以便渐进迁移。
 
 长视频使用 `analyze_long_video_url`：`long-video.ts` 在共享期限和文件预算内编排概览与精读，`media-window.ts` 负责按源时间获取、验证及准备有界媒体。分段结果、概览覆盖、精读覆盖和未读区间随结果返回，失败段不能作为最终 Findings 的引用来源。B 站通用与兼容入口共用分 P 解析，CID、时长和下载 URL 对齐，并保留 `metadata.part_title`。具体约束见[长视频设计与验收](./long-video.md)。
 
@@ -16,11 +16,22 @@ Catalyst 将平台获取与研究流程分开：平台 Adapter 提供统一素�
 
 ## 调用路径
 
-参考宿主 `research-task-cli.ts` 通过 MCP 客户端调用现有 stdio 服务，不增加服务器工具。`research-tasks.ts` 将固定计划、明确选定的动作、调用前的意图及期限预留、调用后的结构化结果保存到独立任务记录。`research-task-store.ts` 提供原子文件、版本和进程锁；恢复跳过已记录结果，遗留在途调用转为未知并停止。宿主继续承担下一轮选择和对照，详见[一轮补读与恢复](./research-tasks.md)。
+链接任务通过 `start_research_task` 接收 1–3 个已选择的来源和问题，`continue_research_task` 沿用任务 ID、材料和剩余额度，`get_research_task`、`list_research_tasks`、`delete_research_task` 管理本地记录。`link-research.ts` 以确定顺序直接调用已有引擎：视频使用可保存的长视频研究，小红书先识别图文／视频，多个已读来源进入现有文本对照。它不递归启动 MCP 服务，不搜索或自主扩展来源；宿主决定何时开始和继续。首次最多 3 步，续跑最多 4 步，每次调用内同一来源最多读一次，未读来源优先。详见[从链接开始研究与继续](./link-research.md)。
+
+`research-task-cli.ts` 的 `start`／`continue` 通过编译后的 stdio 服务调用链接任务工具。旧 `create`／`run` 继续使用 `research-tasks.ts` 的 v1 固定补读计划与明确选择的动作 key，契约见[一轮补读与恢复](./research-tasks.md)。v2 链接任务与 v1 共用 `research-task-store.ts` 的通用原子快照、版本和进程锁；CLI 查看／列出／删除兼容两种记录，MCP 任务工具只管理 v2。调用意图及完整期限预留在外部工作前保存，结果校验后再记录；遗留在途调用转为未知并停止，不能自动重放。
+
+链接任务按来源保留证据：长视频续跑复用成功窗口并重新综合；图文保留各次读取的页码、通道及报告，合并证据时隔离 ID，报告仍表达各自范围。来源后续解析失败时，旧可用材料继续保留并标明新失败。`comparison_current` 由当前来源结果与对照的输入历史决定，防止旧对照冒充已包含新证据的结论。单篇图文多次读取不会额外生成整篇综合，宿主基于保留证据回答。
 
 ```mermaid
 flowchart TD
   Host[宿主 Agent] --> MCP[MCP analyze_video_url]
+  Host --> Task[MCP start / continue_research_task]
+  Task --> Long[可恢复长视频引擎]
+  Task --> Note[图文研究引擎]
+  Task --> Ledger[来源证据 调用意图和结果 累计额度]
+  Task --> Compare
+  Ledger --> Task
+  Task --> Host
   Host --> Discovery[MCP discover_bilibili_videos]
   Discovery --> Search[B 站匿名搜索元数据]
   Search --> Candidates[DiscoveryResult 未读候选]
@@ -55,6 +66,16 @@ flowchart TD
 
 | 模块 | 职责 |
 | --- | --- |
+| `src/link-research-contracts.ts` | 链接任务、来源、调用历史、累计预算和返回视图契约。 |
+| `src/link-research-schema.ts` | 链接任务请求与保存记录校验，动作身份及嵌套长视频结果保留。 |
+| `src/link-research.ts` | 从链接开始的有界读取、显式续跑、比较更新、预算和状态检查点。 |
+| `src/link-research-materials.ts` | 保留来源材料，合并图文通道覆盖，隔离分次引用与报告范围。 |
+| `src/link-research-receipts.ts` | 新访问链接与返回结果的来源、分 P、窗口／页码及引用校验。 |
+| `src/link-research-tools.ts` | 五个链接任务 MCP 工具、参数适配与安全错误返回。 |
+| `src/link-research-store.ts` | v2 链接记录及 v1／v2 通用读取适配，共用快照存储。 |
+| `src/research-task-store.ts` | 两种任务共用的有界私有快照、版本比较、原子写入与进程锁。 |
+| `src/research-tasks.ts` | v1 固定补读计划的明确动作选择、执行与恢复。 |
+| `src/research-task-cli.ts` | stdio 参考宿主、链接任务及固定补读命令、本地管理命令。 |
 | `src/contracts.ts` | 平台身份、能力、字幕、媒体、Evidence、Finding、失败和结果契约。 |
 | `src/followup-plan-contracts.ts` | 补读材料、证据目标、缺口、动作、宿主历史与停止结果契约。 |
 | `src/followup-plan-schema.ts` | 规划请求、独立结果及各现有工具建议参数的 Schema。 |
@@ -122,6 +143,8 @@ flowchart TD
 不要求结构化模型输出成功才能保留已有证据。非结构化返回会保留分析文本并给出告警，结果通常为 `partial`。媒体或 Provider 失败时，已获取的元数据和可用证据继续返回，错误记录阶段、代码和重试性质。
 
 ## 质量与预算
+
+链接任务的累计声明期限默认 1,800 秒、最多 3,600 秒；来源步骤默认 240 秒，对照预留 `min(120, action_timeout_seconds)` 秒，每步整额预留且不退款。累计动作默认 12、最多 16，重启和继续均不重置。视频默认 600 秒概览段、最多 12 段，超限在预检时拒绝而非截断；每次视频调用的 128 MiB 获取文件额度不跨任务累计。v1／v2 共用最多 100 条、每条 8 MiB 的本地任务存储。关联视频 session 单独管理，删除任务不会删除 session。比较工具原有的每材料 80 项证据及 2 MiB 输入限制可使对照不可用，但不能使已保存的研究结果被丢弃。
 
 补读规划只从结果里已有的通道、范围、身份、读取错误及显式搜索词推导动作，不从问题文字猜测需要整片或画面。默认继承各材料原模式，只检查原请求范围；宿主明确要求完整来源时才生成范围扩展。相同来源的互补覆盖先合并，旧问题视觉观察不能充作新问题覆盖。缺少可靠范围时保留选择条件；访问受阻不盲目重试，搜索阻断也不能推断媒体获取受阻。动作按目标工具 Schema 校验，新视频读取／图片页读取有单动作上限，保存记录续跑另按原窗口计划、期限与获取预算执行；轮次、来源、动作与已尝试 key 限制剩余建议。输入最多 2 MiB，本次规划默认 10 秒，模型及执行计数固定为零。历史由宿主传入，工具没有后台循环、持久账本或语义充分性裁决。
 

@@ -16,7 +16,7 @@ Catalyst 为现有 Agent 提供 B 站候选发现、视频与小红书图文研�
 | 本地视频 | 保留视觉分析和静音片段检查工具。 |
 | 抖音 | 获取能力调查候选，尚不列为预览版支持平台。 |
 
-Discovery 从有界的 B 站候选搜索起步，确定性补读规划可按明确的证据与范围目标建议下一步读取或搜索。查询规划、候选选择、动作执行和整体对话由宿主 Agent 负责；跨平台搜索、自动研究循环和长期任务调度属于后续工作。
+Discovery 从有界的 B 站候选搜索起步。对已选择的链接，持久任务衔接初次读取、保存进度、显式继续和证据对照；确定性补读规划也可单独建议下一步读取或搜索。查询规划、来源选择和整体对话由宿主 Agent 负责；跨平台搜索、自主研究循环和后台调度属于后续工作。
 
 ## 安装
 
@@ -68,6 +68,33 @@ npm start
 这会启动编译后的 stdio MCP 服务。宿主配置的 command 使用 `node`，args 使用 `dist/index.js` 的绝对路径。宿主从其他目录启动时，将 `DOTENV_CONFIG_PATH` 设置为本地 `.env` 的绝对路径。宿主的工具超时应覆盖请求中的研究期限和启动开销。
 
 Provider 凭据放在进程环境或本地 `.env`，避免写入会提交到仓库的宿主配置。沿用的 `CODEX_VIDEO_PROVIDER` 是历史配置名：默认 `stepfun`，也可选择 `gemini`。
+
+## 贴链接研究，之后继续
+
+向宿主提供 1–3 条 B 站、YouTube 或小红书链接及问题，即可开始研究，无需先准备已读结果 JSON 或手动切视频：
+
+```text
+start_research_task({
+  urls: ["https://www.bilibili.com/video/BV1DTxXzUEvW/?p=17"],
+  question: "这一节课介绍了哪些自注意力机制，各自解决什么问题？",
+  mode: "language"
+})
+```
+
+返回值包含 `task.id`、各来源进度和保留的证据。还有未完成内容时，用户之后说“继续”，宿主沿用此 ID：
+
+```text
+continue_research_task({ task_id: "<task.id>" })
+get_research_task({ task_id: "<task.id>" })
+list_research_tasks({})
+delete_research_task({ task_id: "<task.id>" })
+```
+
+单个链接也能使用。视频按完整所选视频／分 P 规划有界分段，并非默认只读开头；图文保留原始页码及实际文字／视觉覆盖。一次调用内每个来源最多读取一次，未读链接优先；首次最多执行 3 步，继续时 `max_steps` 可设为 1–4，默认 3。取得 2–3 份材料后，可用一步对照已保留证据；`comparison_current` 明确说明对照是否已包含最新读取结果。
+
+默认任务额度为 1,800 秒，每次来源调用完整预留 240 秒，对照最多预留 120 秒，不退款；“继续”不重置额度。已完成工作保留，未能确认的调用停止等待核查，不会自动重放或后台续跑。查看、列出任务不请求来源或模型，删除任务也不删除关联视频 session。
+
+CLI 可用 `npm run task -- start /absolute/path/input.json`，输入采用 camelCase 的 `urls`、`question` 及可选预算，之后运行 `npm run task -- continue TASK_UUID`。完整输入、分享链接更新、图文分次报告及预算边界见[从链接开始研究与继续](./docs/link-research.md)。
 
 ## 发现 B 站候选
 
@@ -132,7 +159,7 @@ plan_research_followup({
 
 ## 执行一轮选定补读
 
-参考宿主保存固定补读计划，只通过现有 MCP 服务执行宿主明确选择的动作 key：
+底层 v1 参考宿主保存固定补读计划，只通过现有 MCP 服务执行宿主明确选择的动作 key。上面的链接任务使用 v2；CLI 的 `show`、`list`、`delete` 可管理两种记录：
 
 ```bash
 npm run build
