@@ -22,14 +22,21 @@ Catalyst 将平台获取与研究流程分开：平台 Adapter 提供统一素�
 
 链接任务按来源保留证据：长视频续跑复用成功窗口并重新综合；图文保留各次读取的页码、通道及报告，合并证据时隔离 ID，报告仍表达各自范围。来源后续解析失败时，旧可用材料继续保留并标明新失败。`comparison_current` 由当前来源结果与对照的输入历史决定，防止旧对照冒充已包含新证据的结论。单篇图文多次读取不会额外生成整篇综合，宿主基于保留证据回答。
 
+`follow_up_research_task` 在父任务锁内取得确认材料及 revision，将原始字幕／ASR／正文／OCR 保存到独立子任务，不复制旧报告、Findings 或视觉观察。语言追问只从快照生成新问题的引用回答，不访问来源或补齐父缺口；显式视觉追问做新的 `vision` 读取，再按所选通道组合证据。内部 `answerResearchMaterials` 与原对照共用摘录及引用校验，但允许单来源回答，并返回独立的 `answer`／`answer_current`。子任务预算、检查点及未知结果处理沿用链接任务，不依赖父任务或父 session 后续存在。详见[任务级连续追问](./task-followup.md)。
+
 ```mermaid
 flowchart TD
   Host[宿主 Agent] --> MCP[MCP analyze_video_url]
   Host --> Task[MCP start / continue_research_task]
+  Host --> FollowUp[MCP follow_up_research_task]
+  FollowUp --> Snapshot[父 revision 和原始文字快照]
+  Snapshot --> Task
   Task --> Long[可恢复长视频引擎]
   Task --> Note[图文研究引擎]
   Task --> Ledger[来源证据 调用意图和结果 累计额度]
   Task --> Compare
+  Task --> Answer[answerResearchMaterials]
+  Answer --> Validated
   Ledger --> Task
   Task --> Host
   Host --> Discovery[MCP discover_bilibili_videos]
@@ -71,7 +78,9 @@ flowchart TD
 | `src/link-research.ts` | 从链接开始的有界读取、显式续跑、比较更新、预算和状态检查点。 |
 | `src/link-research-materials.ts` | 保留来源材料，合并图文通道覆盖，隔离分次引用与报告范围。 |
 | `src/link-research-receipts.ts` | 新访问链接与返回结果的来源、分 P、窗口／页码及引用校验。 |
-| `src/link-research-tools.ts` | 五个链接任务 MCP 工具、参数适配与安全错误返回。 |
+| `src/link-research-tools.ts` | 六个链接／追问任务 MCP 工具、参数适配与安全错误返回。 |
+| `src/task-followup-materials.ts` | 原始文字快照、父来源关联、复用与新视觉证据组合，以及回答输入身份。 |
+| `src/research-source-evidence.ts` | 研究来源 URL、身份、分 P 和原始证据范围的共享校验。 |
 | `src/link-research-store.ts` | v2 链接记录及 v1／v2 通用读取适配，共用快照存储。 |
 | `src/research-task-store.ts` | 两种任务共用的有界私有快照、版本比较、原子写入与进程锁。 |
 | `src/research-tasks.ts` | v1 固定补读计划的明确动作选择、执行与恢复。 |

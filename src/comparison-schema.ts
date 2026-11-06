@@ -11,6 +11,8 @@ export const comparisonRequestSchema = z.strictObject({
   question: z.string().trim().min(3).max(2000), materials: z.array(comparisonInputSchema).min(2).max(3),
   language: z.string().min(2).max(20).optional(), timeoutSeconds: z.number().min(1).max(300).default(120), maxComparisons: z.number().int().min(1).max(8).default(6),
 });
+/** A saved-source question can be answered from a single selected material. */
+export const answerRequestSchema = comparisonRequestSchema.extend({ materials: z.array(comparisonInputSchema).min(1).max(3) });
 const citation = z.strictObject({ evidence_id: z.string().min(1).max(2000), quote: z.string().trim().min(1).max(500) });
 export const comparisonPositionSchema = z.strictObject({
   material_id: z.string(), stance: z.enum(["supports", "contradicts", "not_addressed", "insufficient"]), citations: z.array(citation).max(6), explanation: z.string().trim().min(1).max(1500),

@@ -34,13 +34,28 @@ export const continueLinkResearchRequestSchema = z.strictObject({
 }).refine(input => !input.sourceUrls || new Set(input.sourceUrls.map(source => source.sourceId)).size === input.sourceUrls.length,
   "Supply at most one fresh URL per source.");
 
+/** Omitted research settings inherit the parent; the new task has its own budget. */
+export const followUpLinkResearchRequestSchema = z.strictObject({
+  question, mode: mode.default("language"), language,
+  totalTimeoutSeconds: totalTimeoutSeconds.optional(), actionTimeoutSeconds: actionTimeoutSeconds.optional(),
+  maxActions: maxActions.optional(), segmentSeconds: segmentSeconds.optional(), maxSegments: maxSegments.optional(),
+  maxDetailWindows: maxDetailWindows.optional(),
+  sourceUrls: z.array(z.strictObject({ sourceId: z.string().regex(/^source:[1-3]$/), url: inputUrl })).max(3).optional(),
+}).refine(input => input.mode !== "language" || (input.maxDetailWindows ?? 0) === 0, "Language research requires zero visual detail windows.")
+  .refine(input => !input.sourceUrls || new Set(input.sourceUrls.map(source => source.sourceId)).size === input.sourceUrls.length,
+    "Supply at most one fresh URL per source.");
+
 const normalizedRequestSchema = z.strictObject({
   urls: z.array(inputUrl).min(1).max(3), question, mode, language,
   totalTimeoutSeconds, actionTimeoutSeconds, maxActions, segmentSeconds, maxSegments, maxDetailWindows,
 });
 const sourceId = z.string().regex(/^source:[1-3]$/);
-const tool = z.enum(["analyze_long_video_url", "analyze_xiaohongshu_note", "resume_long_video_research", "compare_research_materials"]);
+const tool = z.enum(["analyze_long_video_url", "analyze_xiaohongshu_note", "resume_long_video_research", "compare_research_materials", "answer_research_materials"]);
 const key = z.string().regex(/^[a-f0-9]{64}$/);
+const snapshotMaterial = z.discriminatedUnion("kind", [
+  z.strictObject({ kind: z.literal("video"), result: z.record(z.string(), z.unknown()), label: z.string().trim().min(1).max(100).optional() }),
+  z.strictObject({ kind: z.literal("note"), result: z.record(z.string(), z.unknown()), label: z.string().trim().min(1).max(100).optional() }),
+]);
 export const linkResearchTaskRecordSchema = z.strictObject({
   schema_version: z.literal("2"), kind: z.literal("link_research"), id: z.string().uuid(),
   revision: z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
@@ -56,6 +71,10 @@ export const linkResearchTaskRecordSchema = z.strictObject({
   status: z.enum(["ready", "running", "completed", "partial", "needs_attention", "budget_exhausted", "cancelled"]),
   budget: z.strictObject({ max_actions: maxActions, attempted_actions: z.number().int().min(0).max(16), total_timeout_seconds: totalTimeoutSeconds, reserved_timeout_seconds: z.number().int().min(0).max(3600) }),
   stop_reason: z.string().max(100),
+  follow_up: z.strictObject({
+    parent_task_id: z.string().uuid(), parent_revision: z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
+    snapshots: z.array(z.strictObject({ source_id: sourceId, material: snapshotMaterial.nullable() })).min(1).max(3),
+  }).optional(),
 });
 
 const timeout = { timeout_seconds: actionTimeoutSeconds };
@@ -77,6 +96,7 @@ const comparisonArguments = z.strictObject({
   question, language, ...timeout, max_comparisons: z.number().int().min(1).max(8).optional(),
   materials: z.array(comparisonInputSchema).min(2).max(3).optional(),
 });
+const answerArguments = z.strictObject({ question, language, ...timeout, materials_hash: key });
 
 /** Execution budgets are not part of the identity of an attempted operation. */
 export function linkActionKey(action: Pick<LinkResearchAction, "tool" | "source_id" | "arguments" | "basis">): string {
@@ -86,7 +106,7 @@ export function linkActionKey(action: Pick<LinkResearchAction, "tool" | "source_
 
 /** The ordinary Xiaohongshu wrapper schema otherwise strips nested long-video state. */
 export function parseLinkActionResult(action: Pick<LinkResearchAction, "tool">, input: unknown): Record<string, unknown> {
-  if (action.tool === "compare_research_materials") return comparisonResultSchema.parse(input);
+  if (["compare_research_materials", "answer_research_materials"].includes(action.tool)) return comparisonResultSchema.parse(input);
   if (action.tool !== "analyze_xiaohongshu_note") return longVideoResultSchema.parse(input);
   const wrapper = xiaohongshuResearchResultSchema.parse(input);
   const raw = input as { result?: unknown };
@@ -119,24 +139,35 @@ export function parseLinkResearchTaskRecord(input: unknown, id?: string): LinkRe
     if (source.id !== `source:${index + 1}` || source.url !== request.urls[index] || !publicUrl(source.url)) bad();
     if ((getAdapter(source.url).platform === "xiaohongshu" ? "xiaohongshu" : "video") !== source.kind) bad();
   }
+  if (record.follow_up && (record.follow_up.parent_task_id === record.id || record.follow_up.snapshots.length !== record.sources.length ||
+      record.follow_up.snapshots.some((snapshot, index) => snapshot.source_id !== record.sources[index].id))) bad();
   const keys = new Set<string>();
   let reserved = 0;
   for (const [index, action] of record.actions.entries()) {
     if (action.index !== index || action.key !== linkActionKey(action) || keys.has(action.key) || new Set(action.basis).size !== action.basis.length ||
         action.basis.some(prior => prior >= index || record.actions[prior].state !== "recorded")) bad();
     keys.add(action.key); reserved += action.timeout_seconds;
-    const args: Record<string, unknown> = (action.tool === "analyze_long_video_url" ? longArguments : action.tool === "analyze_xiaohongshu_note" ? noteArguments : action.tool === "resume_long_video_research" ? resumeArguments : comparisonArguments).parse(action.arguments);
+    const args: Record<string, unknown> = (action.tool === "analyze_long_video_url" ? longArguments : action.tool === "analyze_xiaohongshu_note" ? noteArguments : action.tool === "resume_long_video_research" ? resumeArguments : action.tool === "answer_research_materials" ? answerArguments : comparisonArguments).parse(action.arguments);
     if (args.timeout_seconds !== action.timeout_seconds || (typeof args.url === "string" && !publicUrl(args.url))) bad();
-    if (action.tool === "compare_research_materials") {
+    if (action.tool === "answer_research_materials") {
+      const latest = record.sources.flatMap(source => {
+        const prior = record.actions.slice(0, index).filter(a => a.source_id === source.id && a.state === "recorded").at(-1);
+        return prior ? [prior.index] : [];
+      });
+      if (!record.follow_up || action.source_id !== null || args.question !== request.question || args.language !== request.language ||
+          action.timeout_seconds !== Math.min(120, request.actionTimeoutSeconds) || JSON.stringify(action.basis) !== JSON.stringify(latest)) bad();
+    } else if (action.tool === "compare_research_materials") {
+      if (record.follow_up) bad();
       if (action.source_id !== null || action.basis.length < 2 || action.basis.some(prior => record.actions[prior].source_id === null) || args.question !== request.question) bad();
       const sourceIds = action.basis.map(prior => record.actions[prior].source_id);
       if (new Set(sourceIds).size !== sourceIds.length || action.timeout_seconds > Math.min(120, request.actionTimeoutSeconds)) bad();
     } else {
       const source = record.sources.find(source => source.id === action.source_id) ?? bad();
+      if (record.follow_up && request.mode === "language") bad();
       if (action.timeout_seconds !== request.actionTimeoutSeconds || action.basis.some(prior => record.actions[prior].source_id !== source.id)) bad();
       if ("question" in args && args.question !== request.question || "language" in args && args.language !== request.language) bad();
       if (action.tool === "analyze_long_video_url") {
-        if (source.kind !== "video" || args.mode !== request.mode) bad();
+        if (source.kind !== "video" || args.mode !== (record.follow_up ? "vision" : request.mode)) bad();
         const prior = record.actions.slice(0, index).filter(a => a.source_id === source.id);
         if (prior.length) {
           // A supplied fresh URL may retry resolution that never produced a usable
@@ -146,8 +177,8 @@ export function parseLinkResearchTaskRecord(input: unknown, id?: string): LinkRe
         } else if (action.basis.length) bad();
       }
       if (action.tool === "analyze_xiaohongshu_note") {
-        const expectedMode = request.mode === "language" ? "text" : request.mode === "multimodal" ? "combined" : "vision";
-        if (source.kind !== "xiaohongshu" || (action.basis.length ? request.mode !== "multimodal" && args.mode !== expectedMode : args.mode !== expectedMode) || (args.start_page === undefined) !== (args.end_page === undefined) ||
+        const expectedMode = record.follow_up ? "vision" : request.mode === "language" ? "text" : request.mode === "multimodal" ? "combined" : "vision";
+        if (source.kind !== "xiaohongshu" || (action.basis.length && !record.follow_up ? request.mode !== "multimodal" && args.mode !== expectedMode : args.mode !== expectedMode) || (args.start_page === undefined) !== (args.end_page === undefined) ||
             args.start_page !== undefined && Number(args.start_page) > Number(args.end_page)) bad();
       }
       if (action.tool === "resume_long_video_research" && !action.basis.length) bad();
@@ -157,7 +188,7 @@ export function parseLinkResearchTaskRecord(input: unknown, id?: string): LinkRe
       action.result = parseLinkActionResult(action, action.result);
       const leaf = action.tool === "analyze_xiaohongshu_note" ? action.result.result : action.result;
       if (leaf && typeof leaf === "object" && "request" in leaf && (leaf.request as { question: string }).question.trim() !== request.question) bad();
-      if (action.tool === "compare_research_materials" && action.result.question !== request.question) bad();
+      if (["compare_research_materials", "answer_research_materials"].includes(action.tool) && action.result.question !== request.question) bad();
     } else {
       if (index !== record.actions.length - 1 || action.result || action.state === "running" && (action.finished_at || action.error) ||
           action.state === "unknown" && (!action.finished_at || !action.error)) bad();
@@ -171,5 +202,6 @@ export const linkResearchTaskViewShape = {
   task: linkResearchTaskRecordSchema,
   progress: z.array(z.strictObject({ source_id: sourceId, status: z.enum(["pending", "complete", "partial", "unavailable"]), can_continue: z.boolean(), reason: z.string() })).min(1).max(3),
   materials: z.array(comparisonInputSchema).max(3), comparison: comparisonResultSchema.nullable(), comparison_current: z.boolean(), limitations: z.array(z.string()),
+  answer: comparisonResultSchema.nullable().optional(), answer_current: z.boolean().optional(),
 };
 export const linkResearchTaskViewSchema = z.strictObject(linkResearchTaskViewShape);

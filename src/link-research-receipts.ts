@@ -6,19 +6,13 @@ import { canonicalResearchSourceUrl, prepareComparisonMaterials } from "./compar
 import { validateLongPlan } from "./followup-plan-materials.js";
 import { readResult, materialForSource } from "./link-research-materials.js";
 import { parseLinkActionResult } from "./link-research-schema.js";
+import { canonicalResearchInputUrl as canonicalInput, isResearchShareUrl as shortUrl, validateSourceEvidence } from "./research-source-evidence.js";
+import { researchMaterialsHash } from "./task-followup-materials.js";
 
 function mismatch(): never { throw Object.assign(new Error("The research receipt does not match its saved source, question or evidence contract."), { code: "TASK_RESULT_MISMATCH" }); }
 const context = () => ({ signal: new AbortController().signal, deadlineMs: Date.now() + 10_000 });
 const normalizedSourceId = (platform: string, id: string): string => platform === "xiaohongshu" ? id.toLowerCase()
   : platform === "bilibili" ? id.replace(/^bv/i, "BV") : id;
-function canonicalInput(raw: string, identity: { platform: string; id: string }): string | null {
-  try { return canonicalResearchSourceUrl(parseSourceUrl(raw).toString(), identity.platform, identity.id); }
-  catch { return null; }
-}
-function shortUrl(raw: string): boolean {
-  const url = parseSourceUrl(raw);
-  return ["b23.tv", "www.b23.tv", "xhslink.com", "www.xhslink.com", "xhslink.cn", "www.xhslink.cn"].includes(url.hostname);
-}
 export function checkFreshUrl(source: LinkResearchSource, raw: string, record: LinkResearchTaskRecord): void {
   const url = parseSourceUrl(raw), old = parseSourceUrl(source.url), material = materialForSource(record, source);
   const leaf = material && material.kind !== "session" && material.kind !== "xiaohongshu" ? material.result : null;
@@ -34,9 +28,10 @@ export function checkFreshUrl(source: LinkResearchSource, raw: string, record: L
 /** Validate receipts without applying the smaller downstream comparison input budget. */
 export async function validateLinkReceipt(action: LinkResearchAction, input: unknown, record: LinkResearchTaskRecord, comparisonMaterials?: ComparisonInput[]): Promise<Record<string, unknown>> {
   const value = parseLinkActionResult(action, input);
-  if (action.tool === "compare_research_materials") {
+  if (["compare_research_materials", "answer_research_materials"].includes(action.tool)) {
     const result = value as unknown as ComparisonResult;
     if (result.question !== record.request.question || !comparisonMaterials) mismatch();
+    if (action.tool === "answer_research_materials" && (!record.follow_up || action.arguments.materials_hash !== researchMaterialsHash(comparisonMaterials))) mismatch();
     // Validation/budget/deadline failures may return before material preparation.
     if (result.status === "unavailable" && !result.materials.length && !result.evidence.length && !result.comparisons.length && result.analysis === null && result.errors.length) return value;
     const prepared = await prepareComparisonMaterials(comparisonMaterials, record.request.question, context());
@@ -58,7 +53,7 @@ export async function validateLinkReceipt(action: LinkResearchAction, input: unk
   if (!source) mismatch();
   const leaf = readResult(value);
   if (!leaf) { if (value.status === "complete") mismatch(); return value; }
-  const expectedMode = action.tool === "analyze_xiaohongshu_note" && "note" in leaf ? action.arguments.mode : record.request.mode;
+  const expectedMode = action.tool === "analyze_xiaohongshu_note" && "note" in leaf ? action.arguments.mode : record.follow_up ? "vision" : record.request.mode;
   if (leaf.request.question.trim() !== record.request.question || leaf.request.mode !== expectedMode || leaf.request.language !== record.request.language) mismatch();
   const identity = "video" in leaf ? leaf.video : leaf.note;
   if (!identity) { if (leaf.status === "complete" || leaf.evidence.length) mismatch(); return value; }
@@ -72,6 +67,7 @@ export async function validateLinkReceipt(action: LinkResearchAction, input: unk
   }
   if (canonicalInput(leaf.request.url, identity) !== url && leaf.request.url !== source.url) mismatch();
   const previous = materialForSource(record, source);
+  const previousNative = record.follow_up ? materialForSource({ ...record, request: { ...record.request, mode: "vision" }, follow_up: undefined }, source) : previous;
   if (previous && previous.kind !== "session" && previous.kind !== "xiaohongshu") {
     const old = previous.result;
     const oldIdentity = "video" in old ? old.video : old.note;
@@ -82,28 +78,10 @@ export async function validateLinkReceipt(action: LinkResearchAction, input: unk
     if (!("plan" in leaf)) mismatch();
     const long = leaf as LongVideoResult;
     if (long.plan) validateLongPlan(long, { start_seconds: long.request.startSeconds ?? 0, end_seconds: long.request.endSeconds ?? long.video!.durationSeconds });
-    if (action.tool === "resume_long_video_research" && (long.session?.id !== action.arguments.session_id || previous && previous.kind === "video" && (previous.result as LongVideoResult).session?.id !== long.session?.id)) mismatch();
+    if (action.tool === "resume_long_video_research" && (long.session?.id !== action.arguments.session_id || previousNative && previousNative.kind === "video" && (previousNative.result as LongVideoResult).session?.id !== long.session?.id)) mismatch();
     if (long.request.startSeconds !== undefined || long.request.endSeconds !== undefined) mismatch();
     if (((long.request as { segmentSeconds?: number }).segmentSeconds ?? 600) !== record.request.segmentSeconds || ((long.request as { maxSegments?: number }).maxSegments ?? 12) !== record.request.maxSegments || ((long.request as { maxDetailWindows?: number }).maxDetailWindows ?? 2) !== record.request.maxDetailWindows) mismatch();
   }
-  const ids = new Set<string>();
-  for (const e of leaf.evidence) {
-    if (!e.id.trim() || ids.has(e.id)) mismatch(); ids.add(e.id);
-    const eSource = e.source;
-    const id = "video_id" in eSource ? eSource.video_id : eSource.note_id;
-    const part = "video_id" in eSource ? eSource.part_id : undefined;
-    if (eSource.platform !== identity.platform || normalizedSourceId(identity.platform, id) !== normalizedSourceId(identity.platform, identity.id) || part !== ("video" in leaf ? leaf.video!.partId : undefined) || canonicalResearchSourceUrl(eSource.url, identity.platform, identity.id) !== url) mismatch();
-    if ("page" in e) {
-      if (!("note" in leaf)) mismatch();
-      if (e.kind === "note_text" ? e.page !== null || leaf.request.startPage !== undefined : e.page === null || e.page < (leaf.request.startPage ?? 1) || e.page > (leaf.request.endPage ?? leaf.note!.imageCount)) mismatch();
-    } else if (!["metadata", "community"].includes(e.kind)) {
-      if (!("video" in leaf) || e.time_basis !== "source" || !e.time_range || e.time_range.start_seconds < 0 || e.time_range.end_seconds <= e.time_range.start_seconds || e.time_range.end_seconds > leaf.video!.durationSeconds) mismatch();
-    }
-  }
-  const findingIds = new Set<string>();
-  for (const f of leaf.findings) {
-    if (findingIds.has(f.id) || !f.evidence_ids.length || new Set(f.evidence_ids).size !== f.evidence_ids.length || f.evidence_ids.some(id => !ids.has(id))) mismatch();
-    findingIds.add(f.id);
-  }
+  validateSourceEvidence(leaf);
   return value;
 }

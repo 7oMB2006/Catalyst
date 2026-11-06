@@ -96,6 +96,22 @@ delete_research_task({ task_id: "<task.id>" })
 
 CLI 可用 `npm run task -- start /absolute/path/input.json`，输入采用 camelCase 的 `urls`、`question` 及可选预算，之后运行 `npm run task -- continue TASK_UUID`。完整输入、分享链接更新、图文分次报告及预算边界见[从链接开始研究与继续](./docs/link-research.md)。
 
+## 围绕已读来源继续追问
+
+比较两个教程后，可以接着让宿主按教程中的做法整理最小实现步骤：
+
+```text
+follow_up_research_task({
+  task_id: "<上次研究的 task.id>",
+  question: "按这些教程中的做法，整理最小实现步骤，并标明每一步的来源依据。",
+  mode: "language"
+})
+```
+
+追问创建子任务，沿用相同的 1–3 个来源，保存原始字幕、ASR、正文和 OCR 快照，并使用独立预算；父研究保持不变。默认语言追问只回答已保留范围，不请求来源、不重复下载、转写或 OCR，也不自动补齐父研究缺口。旧生成答案和视觉观察被排除；明确选择 `vision` 或 `multimodal` 才为新问题重新检查画面。
+
+后续用子任务的 `task.id` 继续或查看，`answer` 和 `answer_current` 表达新回答及其是否已包含最新证据。删除父任务或关联 session 后，子任务仍可使用。CLI 为 `npm run task -- follow-up PARENT_TASK_UUID /absolute/path/input.json`，输入采用 camelCase 的新 `question` 及可选设置。详见[同一批来源的连续追问、证据范围与预算](./docs/task-followup.md)。
+
 ## 发现 B 站候选
 
 ```text

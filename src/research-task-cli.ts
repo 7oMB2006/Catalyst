@@ -7,14 +7,14 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import type { CreateResearchTaskRequest, ResearchTaskHost } from "./research-task-contracts.js";
 import { AnyResearchTaskStore } from "./link-research-store.js";
-import { continueLinkResearchRequestSchema, linkResearchRequestSchema } from "./link-research-schema.js";
-import type { LinkResearchRequest } from "./link-research-contracts.js";
+import { continueLinkResearchRequestSchema, followUpLinkResearchRequestSchema, linkResearchRequestSchema } from "./link-research-schema.js";
+import type { FollowUpLinkResearchRequest, LinkResearchRequest } from "./link-research-contracts.js";
 import { createResearchTask, runResearchTask } from "./research-tasks.js";
 import { redactSensitiveText } from "./video-analysis.js";
 
 const MAX_INPUT_BYTES = 2 * 1024 * 1024;
 const commands = [
-  "start <input.json> (links and question)", "continue <task-id> [input.json]",
+  "start <input.json> (links and question)", "follow-up <parent-task-id> <input.json>", "continue <task-id> [input.json]",
   "create <input.json>", "show <task-id>", "list", "delete <task-id>",
   "run <task-id> <action-key>... (resume the same selection by omitting keys)",
 ];
@@ -25,10 +25,10 @@ export function createMcpResearchTaskHost(client: Pick<Client, "callTool">): Res
   return {
     async callTool(name, args, signal) {
       const requested = name === "plan_research_followup" ? args.planning_timeout_seconds ?? 10
-        : name === "start_research_task" ? args.total_timeout_seconds ?? 1800
+        : ["start_research_task", "follow_up_research_task"].includes(name) ? args.total_timeout_seconds ?? 1800
         : name === "continue_research_task" ? 3600 : args.timeout_seconds ?? 240;
       const seconds = typeof requested === "number" && Number.isFinite(requested) && requested > 0 ? requested : 240;
-      const cleanup = name === "start_research_task" ? 30_000 : 0;
+      const cleanup = ["start_research_task", "follow_up_research_task"].includes(name) ? 30_000 : 0;
       const response = await client.callTool({ name, arguments: args }, undefined, { timeout: seconds * 1000 + cleanup + 15_000, signal }).catch(() => {
         if (signal?.aborted) throw signal.reason ?? new DOMException("The operation was cancelled.", "AbortError");
         return fail("TASK_TOOL_CALL_FAILED", "The MCP tool call failed before a structured response was confirmed. Inspect the task before attempting more work.");
@@ -80,6 +80,11 @@ export function linkRequestToToolArguments(input: LinkResearchRequest): Record<s
   };
 }
 
+export function followUpRequestToToolArguments(parentId: string, input: FollowUpLinkResearchRequest): Record<string, unknown> {
+  const { urls: _urls, ...settings } = linkRequestToToolArguments({ ...input, urls: [] });
+  return { task_id: parentId, ...settings, source_urls: input.sourceUrls?.map(({ sourceId, url }) => ({ source_id: sourceId, url })) };
+}
+
 async function withHost<T>(operation: (host: ResearchTaskHost, signal: AbortSignal) => Promise<T>): Promise<T> {
   const controller = new AbortController();
   const cancel = () => controller.abort(new DOMException("The host stopped this operation.", "AbortError"));
@@ -112,6 +117,13 @@ export async function researchTaskCli(args: string[]): Promise<unknown> {
     const input = parsed.success ? parsed.data : fail("TASK_INPUT_INVALID", "Supply one to three supported source links, a question, and valid optional task budgets.");
     return withHost((host, signal) => host.callTool("start_research_task", linkRequestToToolArguments(input), signal));
   }
+  if (command === "follow-up" && args.length === 3) {
+    const parsed = followUpLinkResearchRequestSchema.safeParse(await readInput(keys[0]));
+    const input = parsed.success ? parsed.data : fail("TASK_INPUT_INVALID", "Supply a new question and optional follow-up settings; the source set comes from the parent task.");
+    const parent = await new AnyResearchTaskStore().load(id);
+    if (parent.schema_version !== "2") fail("TASK_INPUT_INVALID", "Follow-up accepts a saved link research task.");
+    return withHost((host, signal) => host.callTool("follow_up_research_task", followUpRequestToToolArguments(id, input), signal));
+  }
   if (command === "continue" && (args.length === 2 || args.length === 3)) {
     const parsed = continueLinkResearchRequestSchema.safeParse(args.length === 3 ? await readInput(keys[0]) : {});
     const input = parsed.success ? parsed.data : fail("TASK_INPUT_INVALID", "Continuation input accepts maxSteps and optional fresh sourceUrls only; task budgets and question remain fixed.");
@@ -133,7 +145,9 @@ export async function researchTaskCli(args: string[]): Promise<unknown> {
   if (command === "show" && args.length === 2) return store.load(id);
   if (command === "delete" && args.length === 2) { await store.delete(id); return { id, deleted: true }; }
   if (command === "list" && args.length === 1) return {
-    tasks: (await store.list()).map((record) => ({ id: record.id, revision: record.revision, status: record.status, question: record.request.question, stop_reason: record.stop_reason, budget: record.budget, updated_at: record.updated_at })),
+    tasks: (await store.list()).map((record) => ({ id: record.id, revision: record.revision, status: record.status, question: record.request.question, stop_reason: record.stop_reason, budget: record.budget, updated_at: record.updated_at,
+      ...(record.schema_version === "2" && record.follow_up ? { parent_task_id: record.follow_up.parent_task_id, parent_revision: record.follow_up.parent_revision } : {}),
+    })),
   };
   return fail("TASK_CLI_USAGE", `Use one of: ${commands.join("; ")}.`);
 }

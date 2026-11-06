@@ -64,7 +64,7 @@ test("MCP link task tools accept links and translate continuation without requir
   });
   try {
     const tools = (await fixture.client.listTools()).tools;
-    assert.deepEqual(tools.map(tool => tool.name).sort(), ["continue_research_task", "delete_research_task", "get_research_task", "list_research_tasks", "start_research_task"]);
+    assert.deepEqual(tools.map(tool => tool.name).sort(), ["continue_research_task", "delete_research_task", "follow_up_research_task", "get_research_task", "list_research_tasks", "start_research_task"]);
     const startTool = tools.find(tool => tool.name === "start_research_task")!;
     assert.equal(startTool.annotations?.readOnlyHint, false);
     assert.equal(startTool.annotations?.destructiveHint, false);

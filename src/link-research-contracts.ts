@@ -23,7 +23,11 @@ export interface NormalizedLinkResearchRequest extends LinkResearchRequest {
   maxDetailWindows: number;
 }
 export interface LinkResearchSource { id: string; url: string; kind: "video" | "xiaohongshu" }
-export type LinkResearchTool = "analyze_long_video_url" | "analyze_xiaohongshu_note" | "resume_long_video_research" | "compare_research_materials";
+export type LinkResearchTool = "analyze_long_video_url" | "analyze_xiaohongshu_note" | "resume_long_video_research" | "compare_research_materials" | "answer_research_materials";
+export interface FollowUpSourceSnapshot {
+  source_id: string;
+  material: Extract<ComparisonInput, { kind: "video" | "note" }> | null;
+}
 export interface LinkResearchAction {
   index: number;
   key: string;
@@ -52,6 +56,8 @@ export interface LinkResearchTaskRecord {
   status: "ready" | "running" | "completed" | "partial" | "needs_attention" | "budget_exhausted" | "cancelled";
   budget: { max_actions: number; attempted_actions: number; total_timeout_seconds: number; reserved_timeout_seconds: number };
   stop_reason: string;
+  /** Self-contained source text, never the parent's generated reports or visual observations. */
+  follow_up?: { parent_task_id: string; parent_revision: number; snapshots: FollowUpSourceSnapshot[] };
 }
 export interface LinkResearchTaskStorage {
   newId(): string;
@@ -70,11 +76,14 @@ export interface ContinueLinkResearchRequest {
   /** Fresh acquisition URLs are used in memory and must name the saved source. */
   sourceUrls?: Array<{ sourceId: string; url: string }>;
 }
+export type FollowUpLinkResearchRequest = Omit<LinkResearchRequest, "urls"> & Pick<ContinueLinkResearchRequest, "sourceUrls">;
 export interface LinkResearchTaskView {
   task: LinkResearchTaskRecord;
   progress: Array<{ source_id: string; status: "pending" | "complete" | "partial" | "unavailable"; can_continue: boolean; reason: string }>;
   materials: ComparisonInput[];
   comparison: ComparisonResult | null;
   comparison_current: boolean;
+  answer?: ComparisonResult | null;
+  answer_current?: boolean;
   limitations: string[];
 }

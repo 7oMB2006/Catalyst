@@ -1,7 +1,7 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import type { LinkResearchTaskView } from "./link-research-contracts.js";
-import { startLinkResearchTask, continueLinkResearchTask, getLinkResearchTask } from "./link-research.js";
+import { startLinkResearchTask, continueLinkResearchTask, getLinkResearchTask, followUpLinkResearchTask } from "./link-research.js";
 import { LinkResearchTaskStore } from "./link-research-store.js";
 import { linkResearchTaskViewShape } from "./link-research-schema.js";
 
@@ -9,10 +9,11 @@ export interface LinkResearchToolDependencies {
   start?: typeof startLinkResearchTask;
   continue?: typeof continueLinkResearchTask;
   get?: typeof getLinkResearchTask;
+  followUp?: typeof followUpLinkResearchTask;
   store?: Pick<LinkResearchTaskStore, "list" | "load" | "delete">;
 }
 
-const taskId = z.string().uuid().describe("Local task UUID returned by start_research_task or list_research_tasks.");
+const taskId = z.string().uuid().describe("Local task UUID returned by a research task tool or list_research_tasks.");
 function reply(value: Record<string, unknown>, isError = false) {
   return { content: [{ type: "text" as const, text: JSON.stringify(value, null, 2) }], structuredContent: value, isError };
 }
@@ -52,12 +53,40 @@ export function registerLinkResearchTools(server: McpServer, dependencies: LinkR
       }, { signal: extra.signal }));
     } catch (error) { return failure(error); }
   });
-  server.registerTool("continue_research_task", {
-    title: "Continue a Saved Research Task",
-    description: "Continue the same saved links and question from durable progress. Reads pending sources or unfinished video windows/image pages, retaining completed evidence and cumulative budget. Refreshes comparison when retained evidence changes. A completed task performs no more source/model calls. A missing acknowledgement remains needs_attention and is never automatically replayed. The host maps a user's request to continue to the saved task UUID; the user need not supply result JSON or reading offsets. No background execution.",
+  server.registerTool("follow_up_research_task", {
+    title: "Ask a New Question About Saved Sources",
+    description: "Create an independent child task for a new question about the same one to three saved sources. Snapshots original captions, ASR, note body and OCR, excluding the parent's generated reports, conclusions and visual observations. The parent remains unchanged, and the child has its own cumulative allowance. Language mode answers only from retained text without source requests, media acquisition or ASR; partial retained coverage remains explicit. Vision or multimodal mode performs fresh visual inspection for the new question. Returns task.id for continuation and answer/answer_current for the new cited answer. Does not add sources, silently fill parent gaps, or perform background work.",
     inputSchema: z.strictObject({
       task_id: taskId,
-      max_steps: z.number().int().min(1).max(4).default(3).describe("Maximum source-reading/comparison steps in this invocation, within the task's remaining cumulative limits."),
+      question: z.string().trim().min(3).max(2000),
+      mode: z.enum(["language", "vision", "multimodal"]).default("language"),
+      language: z.string().min(2).max(20).optional(),
+      total_timeout_seconds: z.number().int().min(15).max(3600).optional().describe("Independent child-task timeout allowance; defaults to 1800 seconds, never the parent's remaining allowance."),
+      action_timeout_seconds: z.number().int().min(15).max(600).optional(),
+      max_actions: z.number().int().min(1).max(16).optional(),
+      segment_seconds: z.number().int().min(120).max(900).optional().describe("Omitted video planning settings inherit the parent."),
+      max_segments: z.number().int().min(1).max(24).optional(),
+      max_detail_windows: z.number().int().min(0).max(4).optional(),
+      source_urls: z.array(z.strictObject({ source_id: z.string().regex(/^source:[1-3]$/), url: z.string().min(1).max(8192) })).max(3).optional().describe("Optional fresh access URLs for the same saved sources when a new visual read requires access. Access parameters are not persisted."),
+    }),
+    outputSchema: linkResearchTaskViewShape,
+    annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: true },
+  }, async ({ task_id, question, mode, language, total_timeout_seconds, action_timeout_seconds, max_actions, segment_seconds, max_segments, max_detail_windows, source_urls }, extra) => {
+    try {
+      return taskReply(await (dependencies.followUp ?? followUpLinkResearchTask)(task_id, {
+        question, mode, language, totalTimeoutSeconds: total_timeout_seconds,
+        actionTimeoutSeconds: action_timeout_seconds, maxActions: max_actions,
+        segmentSeconds: segment_seconds, maxSegments: max_segments, maxDetailWindows: max_detail_windows,
+        sourceUrls: source_urls?.map(({ source_id, url }) => ({ sourceId: source_id, url })),
+      }, { signal: extra.signal }));
+    } catch (error) { return failure(error); }
+  });
+  server.registerTool("continue_research_task", {
+    title: "Continue a Saved Research Task",
+    description: "Continue the same saved links and question from durable progress. Reads pending sources or unfinished video windows/image pages, retaining completed evidence and cumulative budget. Refreshes comparison or a follow-up answer when retained evidence changes. A completed task performs no more source/model calls. A missing acknowledgement remains needs_attention and is never automatically replayed. The host maps a user's request to continue to the saved task UUID; the user need not supply result JSON or reading offsets. Use follow_up_research_task for a new question. No background execution.",
+    inputSchema: z.strictObject({
+      task_id: taskId,
+      max_steps: z.number().int().min(1).max(4).default(3).describe("Maximum source-reading, comparison or answer steps in this invocation, within the task's remaining cumulative limits."),
       source_urls: z.array(z.strictObject({
         source_id: z.string().regex(/^source:[1-3]$/),
         url: z.string().min(1).max(8192),
@@ -92,6 +121,7 @@ export function registerLinkResearchTools(server: McpServer, dependencies: LinkR
         id: task.id, revision: task.revision, question: task.request.question,
         urls: task.sources.map((source) => source.url), status: task.status,
         stop_reason: task.stop_reason, budget: task.budget, updated_at: task.updated_at,
+        ...(task.follow_up ? { parent_task_id: task.follow_up.parent_task_id, parent_revision: task.follow_up.parent_revision } : {}),
       }));
       return reply({ tasks });
     } catch (error) { return failure(error); }
