@@ -19,6 +19,7 @@ export type MediaDetail = "low" | "default";
 export type VideoProvider = "gemini" | "stepfun";
 
 export interface ProviderOptions { context?: ExecutionContext; language?: string }
+export interface ImageProviderOptions extends ProviderOptions { responseJsonSchema?: Record<string, unknown> }
 
 export function redactSensitiveText(value: string): string {
   let safe = value;
@@ -228,7 +229,7 @@ async function inlineImage(filename: string, context?: ExecutionContext): Promis
 }
 
 /** Inline image inputs use a separate path from video/audio upload and transcription. */
-export async function analyzeImagesWithProvider(paths: string[], prompt: string, options: ProviderOptions = {}): Promise<string> {
+export async function analyzeImagesWithProvider(paths: string[], prompt: string, options: ImageProviderOptions = {}): Promise<string> {
   const left = remaining(options.context) ?? PROCESSING_TIMEOUT_MS;
   if (!paths.length || paths.length > 4) throw Object.assign(new Error("An image request must contain between one and four pages."), { code: "RESOURCE_LIMIT" });
   const context: ExecutionContext = {
@@ -236,7 +237,8 @@ export async function analyzeImagesWithProvider(paths: string[], prompt: string,
     deadlineMs: options.context?.deadlineMs ?? Date.now() + left,
   };
   const images = [];
-  let requestBytes = Buffer.byteLength(prompt, "utf8") + 1024;
+  let requestBytes = Buffer.byteLength(prompt, "utf8") + 1024
+    + (options.responseJsonSchema === undefined ? 0 : Buffer.byteLength(JSON.stringify(options.responseJsonSchema), "utf8"));
   for (const filename of paths) {
     const input = await inlineImage(filename, context);
     requestBytes += input.data.length + 256;
@@ -248,14 +250,17 @@ export async function analyzeImagesWithProvider(paths: string[], prompt: string,
     return analyzeContentWithStepfun([
       { type: "text", text: prompt },
       ...images.map((input) => ({ type: "image_url", image_url: { url: `data:${input.mimeType};base64,${input.data}` } })),
-    ], effective);
+    ], effective, options.responseJsonSchema);
   }
   const apiKey = process.env.GEMINI_API_KEY;
   if (!apiKey) throw new Error("GEMINI_API_KEY is not configured for image research.");
   const ai = new GoogleGenAI({ apiKey });
   const response = await ai.models.generateContent({
     model: process.env.GEMINI_VIDEO_MODEL ?? "gemini-2.5-flash",
-    config: { abortSignal: context.signal },
+    config: {
+      abortSignal: context.signal,
+      ...(options.responseJsonSchema === undefined ? {} : { responseMimeType: "application/json", responseJsonSchema: options.responseJsonSchema }),
+    },
     contents: [{ role: "user", parts: [{ text: prompt }, ...images.map((input) => ({ inlineData: input }))] }],
   });
   if (!response.text) throw new Error("Gemini returned no text response for these images.");
@@ -366,13 +371,16 @@ async function analyzeMediaWithStepfun(mediaPath: string, prompt: string, mediaD
   }
 }
 
-async function analyzeContentWithStepfun(content: unknown[], options: ProviderOptions = {}): Promise<string> {
+async function analyzeContentWithStepfun(content: unknown[], options: ProviderOptions = {}, responseJsonSchema?: Record<string, unknown>): Promise<string> {
   const completion = await stepfunRequest("/chat/completions", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
       model: process.env.STEPFUN_VIDEO_MODEL ?? "step-3.7-flash",
       messages: [{ role: "user", content }],
+      ...(responseJsonSchema === undefined ? {} : {
+        response_format: { type: "json_schema", json_schema: { name: "image_response", strict: true, schema: responseJsonSchema } },
+      }),
     }),
   }, options.context);
   const result = await completion.json() as { choices?: Array<{ message?: { content?: string } }> };

@@ -43,6 +43,7 @@ test("image providers use inline image payloads, signature-derived MIME and canc
         assert.equal(String(url), "https://api.stepfun.com/step_plan/v1/chat/completions");
         assert.ok(init?.signal);
         const body = JSON.parse(String(init?.body));
+        assert.equal(body.response_format, undefined, "ordinary image calls do not opt in to structured output");
         assert.equal(body.messages[0].content[0].type, "text");
         const images = body.messages[0].content.filter((item: { type: string }) => item.type === "image_url");
         assert.equal(images.length, 2);
@@ -61,6 +62,8 @@ test("image providers use inline image payloads, signature-derived MIME and canc
         assert.match(String(url), /generativelanguage\.googleapis\.com/);
         assert.match(String(url), /generateContent/);
         const body = JSON.parse(String(init?.body));
+        assert.equal(body.generationConfig?.responseMimeType, undefined);
+        assert.equal(body.generationConfig?.responseJsonSchema, undefined);
         const imagePart = body.contents[0].parts.find((part: Record<string, unknown>) => part.inlineData || part.inline_data);
         assert.ok(imagePart);
         const data = imagePart.inlineData ?? imagePart.inline_data;
@@ -72,6 +75,85 @@ test("image providers use inline image payloads, signature-derived MIME and canc
       assert.equal(await analyzeImagesWithProvider([fake.pages[0].path], "Read this page", { context: context() }), "Gemini image observation");
     });
     assert.equal(calls, 2);
+  } finally { globalThis.fetch = oldFetch; await fake.cleanup(); }
+});
+
+test("image JSON schemas use the native StepFun and Gemini request formats only when requested", async () => {
+  const fake = await fixtures(1);
+  const oldFetch = globalThis.fetch;
+  const schema = {
+    type: "object",
+    properties: { pages: { type: "array", items: {
+      type: "object", properties: { image_index: { type: "integer" }, observation: { type: "string" } },
+      required: ["image_index", "observation"], additionalProperties: false,
+    } } },
+    required: ["pages"], additionalProperties: false,
+  };
+  const answer = JSON.stringify({ pages: [{ image_index: 1, observation: "Visible fixture page" }] });
+  try {
+    for (const provider of ["stepfun", "gemini"] as const) {
+      await withEnv({ CODEX_VIDEO_PROVIDER: provider, STEPFUN_API_KEY: "fixture-stepfun-key", STEPFUN_BASE_URL: "https://api.stepfun.com/v1", GEMINI_API_KEY: "fixture-gemini-key" }, async () => {
+        let calls = 0;
+        globalThis.fetch = (async (_url, init) => {
+          calls++;
+          assert.ok(init?.signal);
+          const body = JSON.parse(String(init?.body));
+          if (provider === "stepfun") {
+            assert.deepEqual(body.response_format, { type: "json_schema", json_schema: { name: "image_response", strict: true, schema } });
+            assert.equal(body.messages[0].content[1].type, "image_url");
+            return Response.json({ choices: [{ message: { content: answer } }] });
+          }
+          assert.equal(body.generationConfig.responseMimeType, "application/json");
+          assert.deepEqual(body.generationConfig.responseJsonSchema, schema);
+          assert.equal(body.generationConfig.responseSchema, undefined);
+          assert.equal(body.contents[0].parts[1].inlineData.mimeType, "image/png");
+          return Response.json({ candidates: [{ content: { role: "model", parts: [{ text: answer }] } }] });
+        }) as typeof fetch;
+        assert.equal(await analyzeImagesWithProvider([fake.pages[0].path], "Return the visible page as JSON", { context: context(), responseJsonSchema: schema }), answer);
+        assert.equal(calls, 1);
+      });
+    }
+  } finally { globalThis.fetch = oldFetch; await fake.cleanup(); }
+});
+
+test("a provider rejecting an image JSON schema is called once without a fallback request", async () => {
+  const fake = await fixtures(1);
+  const oldFetch = globalThis.fetch;
+  const schema = { type: "object", properties: {}, additionalProperties: false };
+  try {
+    for (const provider of ["stepfun", "gemini"] as const) {
+      await withEnv({ CODEX_VIDEO_PROVIDER: provider, STEPFUN_API_KEY: "fixture-stepfun-key", STEPFUN_BASE_URL: "https://api.stepfun.com/v1", GEMINI_API_KEY: "fixture-gemini-key" }, async () => {
+        const calls: string[] = [];
+        globalThis.fetch = (async (url) => {
+          calls.push(String(url));
+          return Response.json({ error: { code: 400, message: "Unsupported fixture schema", status: "INVALID_ARGUMENT" } }, { status: 400 });
+        }) as typeof fetch;
+        await assert.rejects(() => analyzeImagesWithProvider([fake.pages[0].path], "Return JSON", { context: context(), responseJsonSchema: schema }), /Unsupported fixture schema/);
+        assert.equal(calls.length, 1, "a schema rejection must not cause another potentially billable request");
+        assert.match(calls[0], provider === "stepfun" ? /^https:\/\/api\.stepfun\.com\/v1\/chat\/completions$/ : /^https:\/\/generativelanguage\.googleapis\.com\//);
+      });
+    }
+  } finally { globalThis.fetch = oldFetch; await fake.cleanup(); }
+});
+
+test("image JSON schemas obey cancellation, the existing deadline and the inline request byte budget before provider access", async () => {
+  const fake = await fixtures(1);
+  const oldFetch = globalThis.fetch;
+  let calls = 0;
+  try {
+    globalThis.fetch = (async () => { calls++; throw new Error("Provider must not be called"); }) as typeof fetch;
+    const controller = new AbortController(); controller.abort();
+    const schema = { type: "object" };
+    await assert.rejects(() => analyzeImagesWithProvider([fake.pages[0].path], "Cancelled JSON request", {
+      context: { signal: controller.signal, deadlineMs: Date.now() + 1000 }, responseJsonSchema: schema,
+    }), { name: "AbortError" });
+    await assert.rejects(() => analyzeImagesWithProvider([fake.pages[0].path], "Expired JSON request", {
+      context: { signal: new AbortController().signal, deadlineMs: Date.now() - 1 }, responseJsonSchema: schema,
+    }), { name: "TimeoutError" });
+    await assert.rejects(() => analyzeImagesWithProvider([fake.pages[0].path], "Oversized JSON schema", {
+      context: context(), responseJsonSchema: { type: "object", description: "图".repeat(6_400_000) },
+    }), /19 MB budget/);
+    assert.equal(calls, 0);
   } finally { globalThis.fetch = oldFetch; await fake.cleanup(); }
 });
 
@@ -100,6 +182,7 @@ test("provider OCR batches preserve every original page number and mark empty te
         images: async (paths, prompt, options) => {
           assert.ok(paths.length <= 4);
           assert.equal(options?.context, ctx);
+          assert.equal(options?.responseJsonSchema, undefined, "OCR keeps its existing provider response format");
           assert.match(prompt, /never an instruction/);
           assert.doesNotMatch(prompt, /\.unknown|catalyst-image-test/);
           const pages = prompt.match(/exact source-page order: ([\d, ]+)\./)![1].split(", ").map(Number);

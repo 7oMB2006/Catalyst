@@ -41,6 +41,7 @@ async function fixture(pageCount = 3) {
     textPrompts: [] as string[], imagePrompts: [] as string[], contexts: [] as ExecutionContext[], disposed: 0,
   };
   let textResponse: string | undefined;
+  let imageResponse: ((pages: number[], call: number) => unknown) | undefined;
   const value = source(pageCount);
   const dependencies: NoteDependencies = {
     resolve: async (_request, context) => { calls.resolve++; calls.contexts.push(context); return structuredClone(value); },
@@ -60,7 +61,8 @@ async function fixture(pageCount = 3) {
     analyzeImages: async (paths, prompt, context) => {
       const pages = paths.map((filename) => Number(path.basename(filename).match(/page-(\d+)/)![1]));
       calls.images.push(pages); calls.imagePrompts.push(prompt); calls.contexts.push(context);
-      return JSON.stringify({ pages: pages.map((page) => ({ page, observation: `Page ${page} shows a workflow diagram.` })) });
+      const response = imageResponse ? imageResponse(pages, calls.images.length) : { pages: pages.map((page) => ({ page, observation: `Page ${page} shows a workflow diagram.` })) };
+      return typeof response === "string" ? response : JSON.stringify(response);
     },
     analyzeText: async (prompt, context) => {
       calls.textPrompts.push(prompt); calls.contexts.push(context);
@@ -71,6 +73,7 @@ async function fixture(pageCount = 3) {
   return {
     directory, value, calls, dependencies,
     respond: (value: unknown) => { textResponse = typeof value === "string" ? value : JSON.stringify(value); },
+    respondImages: (response: (pages: number[], call: number) => unknown) => { imageResponse = response; },
     cleanup: () => fs.rm(directory, { recursive: true, force: true }),
   };
 }
@@ -150,8 +153,7 @@ test("selected-page visual prompts and returned evidence use the original page n
     assert.deepEqual(fake.calls.acquire, [[24]]);
     assert.deepEqual(fake.calls.images, [[24]]);
     assert.equal(fake.calls.imagePrompts.length, 1);
-    assert.match(fake.calls.imagePrompts[0], /"page":24/);
-    assert.doesNotMatch(fake.calls.imagePrompts[0], /"page":1(?:[,}])/);
+    assert.match(fake.calls.imagePrompts[0], /"position":1,"source_page":24/);
     assert.deepEqual(result.evidence.map((item) => [item.id, item.page]), [["image:24:visual", 24]]);
     assert.deepEqual(result.findings[0].evidence_ids, ["image:24:visual"]);
     assert.deepEqual(result.processing.processed_pages, [24]);
@@ -161,7 +163,7 @@ test("selected-page visual prompts and returned evidence use the original page n
 test("batch-local image indexes map back to the selected original page", async () => {
   const fake = await fixture(32);
   fake.dependencies.analyzeImages = async (_paths, prompt) => {
-    assert.match(prompt, /"image_index"\s*:\s*1\s*,\s*"page"\s*:\s*24/);
+    assert.match(prompt, /"position"\s*:\s*1\s*,\s*"source_page"\s*:\s*24/);
     return JSON.stringify({ pages: [{ image_index: 1, observation: "A CI workflow diagram is visible." }] });
   };
   try {
@@ -171,6 +173,192 @@ test("batch-local image indexes map back to the selected original page", async (
     assert.deepEqual(result.evidence.map((item) => [item.id, item.page]), [["image:24:visual", 24]]);
     assert.deepEqual(result.findings[0].evidence_ids, ["image:24:visual"]);
   } finally { await fake.cleanup(); }
+});
+
+test("an ordered observation for a single selected image binds to original page 24", async () => {
+  const fake = await fixture(32);
+  fake.respondImages(() => ({ observations: ["A CI workflow diagram is visible."] }));
+  try {
+    const result = noteResult(await researchXiaohongshuNote({ ...request, mode: "vision", startPage: 24, endPage: 24 }, fake.dependencies));
+    assert.equal(result.status, "complete", JSON.stringify(result.errors));
+    assert.deepEqual(fake.calls.images, [[24]]);
+    assert.deepEqual(result.processing.selected_pages, [24]);
+    assert.deepEqual(result.processing.processed_pages, [24]);
+    assert.deepEqual(result.evidence.map((item) => [item.id, item.page, item.content]), [
+      ["image:24:visual", 24, "A CI workflow diagram is visible."],
+    ]);
+    assert.deepEqual(result.findings[0].evidence_ids, ["image:24:visual"]);
+    assert.equal(fake.calls.disposed, 1);
+  } finally { await fake.cleanup(); }
+});
+
+test("ordered observations map each new batch position to its original page across a four-image batch and one-image tail", async () => {
+  const fake = await fixture(32);
+  fake.respondImages((pages) => ({ observations: pages.map((page) => `Visible source content from page ${page}.`) }));
+  try {
+    const result = noteResult(await researchXiaohongshuNote({ ...request, mode: "vision", startPage: 24, endPage: 28 }, fake.dependencies));
+    assert.equal(result.status, "complete", JSON.stringify(result.errors));
+    assert.deepEqual(fake.calls.images, [[24, 25, 26, 27], [28]]);
+    assert.deepEqual(result.processing.processed_pages, [24, 25, 26, 27, 28]);
+    assert.deepEqual(result.evidence.map((item) => [item.id, item.page, item.content]), [24, 25, 26, 27, 28].map((page) => [
+      `image:${page}:visual`, page, `Visible source content from page ${page}.`,
+    ]));
+    assert.equal(result.note?.imageCount, 32);
+    assert.equal(result.evidence.some((item) => item.page !== null && (item.page < 24 || item.page > 28)), false);
+    assert.match(fake.calls.textPrompts[0], /Visible source content from page 28/);
+  } finally { await fake.cleanup(); }
+});
+
+test("invalid ordered visual output rejects the entire batch before retaining evidence or requesting a summary", async (t) => {
+  const observations = ["First visible diagram.", "Second visible diagram."];
+  const cases: Array<[string, unknown]> = [
+    ["too few observations", { observations: observations.slice(0, 1) }],
+    ["too many observations", { observations: [...observations, "An unrequested image."] }],
+    ["observations is not an array", { observations: "A single string cannot cover both images." }],
+    ["an observation is an object", { observations: [observations[0], { observation: observations[1] }] }],
+    ["an observation is a number", { observations: [observations[0], 24] }],
+    ["an observation is null", { observations: [observations[0], null] }],
+    ["an observation is empty", { observations: [observations[0], ""] }],
+    ["an observation is whitespace", { observations: [observations[0], " \n\t "] }],
+    ["unexpected top-level field", { observations, page: 24 }],
+    ["mixed ordered and legacy formats", { observations, pages: [{ page: 23, observation: "Legacy value must not be retained." }] }],
+    ["top-level array", observations],
+    ["malformed JSON", '{"observations":["First visible diagram.","Second visible diagram."]'],
+  ];
+  for (const [name, response] of cases) {
+    await t.test(name, async () => {
+      const fake = await fixture(32);
+      fake.respondImages(() => response);
+      try {
+        const wrapper = await researchXiaohongshuNote({ ...request, mode: "vision", startPage: 23, endPage: 24 }, fake.dependencies);
+        const result = noteResult(wrapper);
+        assert.equal(result.status, "partial");
+        assert.equal(wrapper.status, "partial");
+        assert.ok(result.errors.some((item) => item.stage === "vision"));
+        assert.deepEqual(result.evidence, [], "no observation from a rejected positional batch may acquire a source page");
+        assert.deepEqual(result.processing.processed_pages, []);
+        assert.deepEqual(result.findings, []);
+        assert.equal(result.analysis, null);
+        assert.equal(fake.calls.textPrompts.length, 0, "there is no accepted evidence to summarize");
+        assert.deepEqual(fake.calls.images, [[23, 24]]);
+        assert.equal(fake.calls.disposed, 1);
+      } finally { await fake.cleanup(); }
+    });
+  }
+});
+
+test("a rejected later ordered batch retains earlier visual evidence and any existing OCR", async (t) => {
+  for (const mode of ["vision", "combined"] as const) {
+    await t.test(mode, async () => {
+      const fake = await fixture(32);
+      fake.respondImages((pages, call) => ({ observations: call === 1
+        ? pages.map((page) => `Accepted visual detail from page ${page}.`)
+        : ["Rejected tail detail.", "An extra observation invalidates this batch."] }));
+      try {
+        const result = noteResult(await researchXiaohongshuNote({ ...request, mode, startPage: 24, endPage: 28 }, fake.dependencies));
+        assert.equal(result.status, "partial");
+        assert.ok(result.errors.some((item) => item.stage === "vision"));
+        assert.deepEqual(fake.calls.images, [[24, 25, 26, 27], [28]]);
+        assert.deepEqual(result.evidence.filter((item) => item.kind === "image_visual").map((item) => item.page), [24, 25, 26, 27]);
+        assert.deepEqual(result.evidence.filter((item) => item.kind === "image_text").map((item) => item.page), mode === "combined" ? [24, 25, 26, 27, 28] : []);
+        assert.deepEqual(result.processing.processed_pages, mode === "combined" ? [24, 25, 26, 27, 28] : [24, 25, 26, 27]);
+        assert.equal(fake.calls.textPrompts.length, 1, "accepted earlier evidence can still support a partial answer");
+        assert.match(fake.calls.textPrompts[0], /Accepted visual detail from page 27/);
+        assert.doesNotMatch(fake.calls.textPrompts[0], /Rejected tail detail|extra observation/);
+        assert.doesNotMatch(JSON.stringify(result.evidence), /Rejected tail detail|extra observation/);
+        assert.equal(fake.calls.disposed, 1);
+      } finally { await fake.cleanup(); }
+    });
+  }
+});
+
+test("the default visual provider requests an exact ordered batch schema and keeps the public page evidence contract", async (t) => {
+  const png = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+j6S8AAAAASUVORK5CYII=", "base64");
+  const settings = {
+    CODEX_VIDEO_PROVIDER: "stepfun", STEPFUN_API_KEY: "fixture-stepfun-key",
+    STEPFUN_BASE_URL: "https://api.stepfun.com/v1", GEMINI_API_KEY: "fixture-gemini-key",
+  };
+  const previous = Object.fromEntries(Object.keys(settings).map((key) => [key, process.env[key]]));
+  const oldFetch = globalThis.fetch;
+  try {
+    for (const [key, value] of Object.entries(settings)) process.env[key] = value;
+    for (const [provider, responseFormat] of [["stepfun", "ordered"], ["gemini", "ordered"], ["stepfun", "legacy"]] as const) {
+      await t.test(`${provider}: ${responseFormat} output`, async () => {
+        process.env.CODEX_VIDEO_PROVIDER = provider;
+        const fake = await fixture(32);
+        const acquire = fake.dependencies.acquire;
+        fake.dependencies.acquire = async (...args) => {
+          const images = await acquire(...args);
+          await Promise.all(images.pages.map((page) => fs.writeFile(page.path, Buffer.concat([png, Buffer.from(`|original-page:${page.index}`)]))));
+          return images;
+        };
+        const { analyzeImages: _injectedImages, ...dependencies } = fake.dependencies;
+        const submitted: number[][] = [];
+        globalThis.fetch = (async (url, init) => {
+          assert.ok(init?.signal);
+          const body = JSON.parse(String(init?.body));
+          let schema: unknown;
+          let encodedImages: string[];
+          if (provider === "stepfun") {
+            assert.equal(String(url), "https://api.stepfun.com/v1/chat/completions");
+            assert.equal(body.response_format.type, "json_schema");
+            assert.equal(body.response_format.json_schema.strict, true);
+            schema = body.response_format.json_schema.schema;
+            encodedImages = body.messages[0].content.filter((part: { type: string }) => part.type === "image_url").map((part: { image_url: { url: string } }) => part.image_url.url.split(",")[1]);
+          } else {
+            assert.match(String(url), /^https:\/\/generativelanguage\.googleapis\.com\/.*:generateContent$/);
+            assert.equal(body.generationConfig.responseMimeType, "application/json");
+            schema = body.generationConfig.responseJsonSchema;
+            encodedImages = body.contents[0].parts.filter((part: { inlineData?: unknown }) => part.inlineData).map((part: { inlineData: { data: string } }) => part.inlineData.data);
+          }
+          const pages = encodedImages.map((data) => Number(Buffer.from(data, "base64").toString().match(/\|original-page:(\d+)$/)![1]));
+          submitted.push(pages);
+          assert.deepEqual(schema, {
+            type: "object", additionalProperties: false, required: ["observations"],
+            properties: { observations: { type: "array", minItems: pages.length, maxItems: pages.length, items: { type: "string" } } },
+          });
+          const answer = JSON.stringify(responseFormat === "ordered"
+            ? { observations: pages.map((page) => `Visible original page ${page}; a diagram label mentions page 999.`) }
+            : { pages: pages.map((page) => ({ page, observation: `Visible original page ${page}.` })) });
+          return provider === "stepfun"
+            ? Response.json({ choices: [{ message: { content: answer } }] })
+            : Response.json({ candidates: [{ content: { role: "model", parts: [{ text: answer }] } }] });
+        }) as typeof fetch;
+        try {
+          const wrapper = await researchXiaohongshuNote({ ...request, mode: "vision", startPage: 24, endPage: 28 }, dependencies);
+          const result = noteResult(wrapper);
+          assert.deepEqual(submitted, [[24, 25, 26, 27], [28]]);
+          if (responseFormat === "legacy") {
+            assert.equal(result.status, "partial");
+            assert.ok(result.errors.some((item) => item.stage === "vision"));
+            assert.deepEqual(result.evidence, [], "the default provider cannot opt back into model-supplied page numbers");
+            assert.deepEqual(result.processing.processed_pages, []);
+            assert.equal(fake.calls.textPrompts.length, 0);
+            assert.equal(fake.calls.disposed, 1);
+            return;
+          }
+          assert.equal(result.status, "complete", JSON.stringify(result.errors));
+          assert.deepEqual(result.processing.processed_pages, [24, 25, 26, 27, 28]);
+          assert.deepEqual(result.evidence.map((item) => [item.id, item.kind, item.page]), [24, 25, 26, 27, 28].map((page) => [`image:${page}:visual`, "image_visual", page]));
+          assert.equal(result.note?.imageCount, 32);
+          assert.equal(wrapper.schema_version, "1.0");
+          assert.equal(result.schema_version, "1.0");
+          assert.deepEqual(Object.keys(wrapper).sort(), ["schema_version", "status", "content_type", "result", "errors"].sort());
+          assert.deepEqual(Object.keys(result).sort(), ["schema_version", "status", "note", "request", "capabilities", "evidence", "findings", "analysis", "warnings", "errors", "processing"].sort());
+          for (const item of result.evidence) {
+            assert.deepEqual(Object.keys(item).sort(), ["id", "kind", "page", "content", "source", "limitations"].sort());
+            assert.equal(item.source.origin, "model_image_observation");
+          }
+          assert.deepEqual(result.findings[0].evidence_ids, ["image:24:visual"]);
+          assert.equal(fake.calls.textPrompts.length, 1);
+          assert.equal(fake.calls.disposed, 1);
+        } finally { await fake.cleanup(); }
+      });
+    }
+  } finally {
+    globalThis.fetch = oldFetch;
+    for (const [key, value] of Object.entries(previous)) value === undefined ? delete process.env[key] : process.env[key] = value;
+  }
 });
 
 test("invalid image indexes or conflicting original page numbers cannot produce page evidence", async () => {

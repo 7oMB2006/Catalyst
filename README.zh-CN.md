@@ -190,6 +190,8 @@ analyze_xiaohongshu_note({
 
 默认研究全部图片，单次最多 50 页；更长笔记必须成对提供 `start_page`/`end_page`（从 1 开始，包含末页），不会只看封面就宣称读完全篇。选择页范围时，证据不混入整篇正文。缺页、OCR 失败、看不清或无效引用会记录为部分结果，并保留已读取的证据。
 
+默认图文 `vision`/`combined` 路径要求所配置的模型与渠道支持原生 JSON Schema 输出。每批按输入顺序为每张图返回一条观察，由程序绑定原始页码；输出无效时拒绝该批，保留已完成的其他批和 OCR。这只验证输出结构与页码映射，不代表画面观察正确。无需新增 MCP 参数；已测范围和 Provider 细节见[模型兼容记录](./docs/model-compatibility.md#2026-11-07--image-note-native-structured-output)。
+
 macOS 优先通过可用的 Swift/Vision 执行本地 OCR；其他环境或缺少本地运行时时，图片会交给已配置的模型 Provider 转写。可设置 `CATALYST_OCR_ENGINE=provider` 或 `apple_vision` 显式选择。OCR 与画面理解都会出错，图中布局和箭头关系宜使用 `vision`/`combined` 核查。单张图片最多 12 MiB、下载总量最多 128 MiB；图片理解每批最多 4 张。收到 AVIF 时，先用 FFmpeg 转为单帧 PNG，再交给 OCR 或视觉分析；解码最多 4000 万像素，转换产物同样受图片字节预算限制。图文页面获取目前为匿名路径，`XIAOHONGSHU_COOKIES_*` 配置仅用于视频下载器。
 
 ## 怎样理解结果

@@ -188,6 +188,8 @@ The entry confirms the actual source type. For image notes, `text` reads the bod
 
 All images are selected by default, up to 50 per request. Longer notes require an inclusive `start_page`/`end_page` pair; cover-only processing never counts as full-note coverage. A page selection excludes the full-note body. Missing or unreadable pages, OCR failures and invalid citations preserve acquired evidence as partial results.
 
+The default image-note `vision`/`combined` path requires provider-native JSON Schema output support on the configured model and channel. Each batch returns one observation per image in input order; Catalyst binds these to the original page numbers. Invalid output rejects that batch while retaining completed batches and OCR. This validates output structure and page mapping, not observation accuracy. No new MCP parameters are needed; see [model compatibility](./docs/model-compatibility.md#2026-11-07--image-note-native-structured-output) for tested scope and provider details.
+
 macOS prefers local OCR through an available Swift/Vision runtime; other environments or unavailable local runtimes send images to the configured model provider for OCR. `CATALYST_OCR_ENGINE=provider` or `apple_vision` selects an explicit path. OCR may misread characters; use vision/combined for layouts and arrows. Images are limited to 12 MiB each and 128 MiB total, with at most four images per model batch. AVIF responses are normalized to a single-frame PNG using FFmpeg before OCR or visual analysis; decoded images are capped at 40 million pixels, and normalized files obey the same byte limits. Note-page fetching currently uses anonymous access; `XIAOHONGSHU_COOKIES_*` applies to the video downloader.
 
 ## Evidence and results
