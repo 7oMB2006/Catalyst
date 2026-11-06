@@ -3,7 +3,8 @@ import type { LongVideoRequest, LongVideoResult } from "./long-video-contracts.j
 import type { LinkResearchAction, LinkResearchRequest, NormalizedLinkResearchRequest, ContinueLinkResearchRequest, LinkResearchSource, LinkResearchTaskOptions, LinkResearchTaskRecord, LinkResearchTaskView } from "./link-research-contracts.js";
 import type { ResearchTaskHost } from "./research-task-contracts.js";
 import { getAdapter, parseSourceUrl } from "./adapters/index.js";
-import { startLongVideoResearch, resumeLongVideoResearch, sanitizeResearchSnapshot } from "./research-sessions.js";
+import { startLongVideoResearch, resumeLongVideoResearch, sanitizeResearchSnapshot, sessionCompatibility } from "./research-sessions.js";
+import { ResearchSessionStore, type ResearchSessionRecord } from "./research-session-store.js";
 import { researchXiaohongshuNote } from "./note-research.js";
 import { compareResearchMaterials } from "./comparison.js";
 import { canonicalResearchSourceUrl } from "./comparison-materials.js";
@@ -88,6 +89,13 @@ export async function startLinkResearchTask(request: LinkResearchRequest, option
 }
 
 type Definition = Pick<LinkResearchAction, "tool" | "source_id" | "arguments" | "basis" | "timeout_seconds">;
+async function localSessionRefusal(definition: Definition): Promise<"session_unavailable" | "session_incompatible" | null> {
+  let saved: ResearchSessionRecord;
+  try { saved = await new ResearchSessionStore().load(definition.arguments.session_id as string); }
+  catch { return "session_unavailable"; }
+  try { return saved.compatibility === sessionCompatibility(saved.request) ? null : "session_incompatible"; }
+  catch { return "session_incompatible"; }
+}
 function sourceDefinition(record: LinkResearchTaskRecord, source: LinkResearchSource, fresh: boolean): Definition | null {
   const request = record.request, previous = latestSourceReceipt(record, source), material = materialForSource(record, source);
   const result = material && material.kind !== "session" && material.kind !== "xiaohongshu" ? material.result : null;
@@ -170,6 +178,15 @@ export async function continueLinkResearchTask(id: string, request: ContinueLink
       }
       if (!definition) break;
       if (record.budget.attempted_actions >= record.budget.max_actions || record.budget.reserved_timeout_seconds + definition.timeout_seconds > record.budget.total_timeout_seconds) { stoppedForBudget = true; break; }
+      // Only the built-in dispatcher owns these local sessions and provider settings.
+      // A known local refusal occurs before dispatch; arbitrary host exceptions still have unknown outcomes.
+      if (!options.host && definition.tool === "resume_long_video_research") {
+        const refusal = await localSessionRefusal(definition);
+        if (refusal) {
+          if (record.status !== "needs_attention" || record.stop_reason !== refusal) { record.status = "needs_attention"; record.stop_reason = refusal; await checkpoint(); }
+          return view(record);
+        }
+      }
       const safe = sanitizeResearchSnapshot(definition);
       const action: LinkResearchAction = { ...safe, index: record.actions.length, key: linkActionKey(safe), state: "running", started_at: now(), finished_at: null, result: null, error: null };
       record.actions.push(action); record.budget.attempted_actions++; record.budget.reserved_timeout_seconds += action.timeout_seconds;

@@ -4,6 +4,7 @@ import type { ComparisonEvidence, ComparisonInput, ComparisonMaterial, PreparedC
 import { researchResultSchema } from "./result-schema.js";
 import { noteResearchResultSchema, xiaohongshuResearchResultSchema } from "./note-result-schema.js";
 import { ResearchSessionStore } from "./research-session-store.js";
+import { YouTubeAdapter, youtubeId } from "./adapters/youtube.js";
 import { redactSensitiveText } from "./video-analysis.js";
 
 const MAX_MATERIAL_EVIDENCE = 80, MAX_EVIDENCE = 200, MAX_TEXT = 32_000;
@@ -24,10 +25,11 @@ function identifier(value: string): void {
 function canonical(raw: string, platform: string, id: string): string {
   let url: URL;
   try { url = new URL(raw); } catch { invalid("A material has an invalid canonical source URL."); }
-  if (!["http:", "https:"].includes(url.protocol) || url.username || url.password || url.port) invalid("A material has an unsupported source URL.");
+  const supportedPort = ["bilibili", "youtube"].includes(platform) && ["80", "443"].includes(url.port);
+  if (!["http:", "https:"].includes(url.protocol) || url.username || url.password || url.port && !supportedPort) invalid("A material has an unsupported source URL.");
   const host = url.hostname.toLowerCase();
   if (platform === "bilibili") {
-    const match = url.pathname.match(/^\/video\/(BV[\da-z]{10})\/?$/i);
+    const match = url.pathname.match(/^\/video\/(BV[\da-z]{10})(?:\/|$)/i);
     if (!["bilibili.com", "www.bilibili.com", "m.bilibili.com"].includes(host) || !match || normalizedId(platform, match[1]) !== normalizedId(platform, id)) invalid("The material URL does not match its Bilibili identity.");
     const parts = url.searchParams.getAll("p");
     if (parts.length > 1 || (parts.length === 1 && (!/^\d+$/.test(parts[0]) || !Number.isSafeInteger(Number(parts[0])) || Number(parts[0]) < 1))) invalid("A material has an invalid selected-part URL.");
@@ -36,12 +38,10 @@ function canonical(raw: string, platform: string, id: string): string {
   }
   if (platform === "youtube") {
     let fromUrl: string | null = null;
-    if (host === "youtu.be") fromUrl = url.pathname.match(/^\/([\w-]+)\/?$/)?.[1] ?? null;
-    else if (["youtube.com", "www.youtube.com", "m.youtube.com"].includes(host)) {
-      if (url.pathname === "/watch" && url.searchParams.getAll("v").length === 1) fromUrl = url.searchParams.get("v");
-      else fromUrl = url.pathname.match(/^\/(?:shorts|embed)\/([\w-]+)\/?$/)?.[1] ?? null;
+    if (new YouTubeAdapter().supports(url) && !(url.pathname === "/watch" && url.searchParams.getAll("v").length !== 1)) {
+      try { fromUrl = youtubeId(url); } catch { /* Invalid or unsupported video path. */ }
     }
-    if (!/^[\w-]{6,32}$/.test(id) || fromUrl !== id) invalid("The material URL does not match its YouTube identity.");
+    if (fromUrl !== id) invalid("The material URL does not match its YouTube identity.");
     return `https://www.youtube.com/watch?v=${id}`;
   }
   if (platform === "xiaohongshu") {

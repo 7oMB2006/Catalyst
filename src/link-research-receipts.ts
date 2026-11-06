@@ -17,7 +17,7 @@ function canonicalInput(raw: string, identity: { platform: string; id: string })
 }
 function shortUrl(raw: string): boolean {
   const url = parseSourceUrl(raw);
-  return ["b23.tv", "xhslink.com", "www.xhslink.com"].includes(url.hostname);
+  return ["b23.tv", "www.b23.tv", "xhslink.com", "www.xhslink.com", "xhslink.cn", "www.xhslink.cn"].includes(url.hostname);
 }
 export function checkFreshUrl(source: LinkResearchSource, raw: string, record: LinkResearchTaskRecord): void {
   const url = parseSourceUrl(raw), old = parseSourceUrl(source.url), material = materialForSource(record, source);
