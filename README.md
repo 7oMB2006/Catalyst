@@ -94,6 +94,22 @@ The default persistent allowance is 1,800 seconds, with 240 seconds reserved per
 
 The CLI provides `npm run task -- start /absolute/path/input.json` with camelCase `urls`, `question` and optional budgets, followed by `npm run task -- continue TASK_UUID`. See [link research, result scope, budgets and CLI inputs](./docs/link-research.md), including fresh share URLs and the limits of accumulated image-note reports.
 
+## Ask another question about the saved sources
+
+After comparing two tutorials, ask the host to turn their documented approach into minimum implementation steps:
+
+```text
+follow_up_research_task({
+  task_id: "<previous task.id>",
+  question: "Using these tutorials, list the minimum implementation steps and cite the source for each step.",
+  mode: "language"
+})
+```
+
+This creates a child with the same 1–3 sources, an independent budget and a snapshot of original captions, ASR, note body and OCR. The parent stays unchanged. Language follow-ups answer only from retained text, without source requests, downloads, ASR, OCR or automatic reading of parent gaps. Old generated answers and visual observations are excluded. Explicit `vision` or `multimodal` performs new visual inspection for the new question.
+
+Use the child's `task.id` to continue or read it; `answer` and `answer_current` identify the new cited answer and its freshness. The child remains usable after deleting the parent or its sessions. CLI: `npm run task -- follow-up PARENT_TASK_UUID /absolute/path/input.json`, with a new `question` and optional settings in camelCase. See [task follow-up, evidence scope and budget boundaries](./docs/task-followup.md).
+
 ## Discover Bilibili candidates
 
 ```text

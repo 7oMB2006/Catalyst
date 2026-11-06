@@ -3,6 +3,7 @@ import type { ComparisonInput } from "./comparison-contracts.js";
 import type { LongVideoResult } from "./long-video-contracts.js";
 import type { NoteResearchResult } from "./note-contracts.js";
 import type { LinkResearchAction, LinkResearchSource, LinkResearchTaskRecord, LinkResearchTaskView } from "./link-research-contracts.js";
+import { mergeFollowUpMaterial, sourceSnapshot } from "./task-followup-materials.js";
 
 export type ReadResult = ResearchResult | LongVideoResult | NoteResearchResult;
 export function readResult(value: Record<string, unknown> | null): ReadResult | null {
@@ -23,7 +24,7 @@ function noteMode(mode: LinkResearchTaskRecord["request"]["mode"]): "text" | "vi
 }
 
 /** Keep each pass's exact evidence and references. Reports retain their actual per-pass scope. */
-export function materialForSource(record: LinkResearchTaskRecord, source: LinkResearchSource): ComparisonInput | null {
+function materialFromReceipts(record: LinkResearchTaskRecord, source: LinkResearchSource): ComparisonInput | null {
   const receipts = sourceReceipts(record, source);
   const usable = receipts.filter(a => { const r = readResult(a.result); return r && ("video" in r ? r.video : r.note); });
   const latest = readResult(usable.at(-1)?.result ?? receipts.at(-1)?.result ?? null);
@@ -49,6 +50,10 @@ export function materialForSource(record: LinkResearchTaskRecord, source: LinkRe
   };
   return { kind: "note", result: merged, label: source.id };
 }
+export function materialForSource(record: LinkResearchTaskRecord, source: LinkResearchSource): ComparisonInput | null {
+  const fresh = materialFromReceipts(record, source);
+  return record.follow_up ? mergeFollowUpMaterial(record, source, fresh) : fresh;
+}
 export function isAccessRestricted(result: ReadResult): boolean {
   const caps = "video" in result ? [result.capabilities.metadata, result.capabilities.media] : [result.capabilities.body, result.capabilities.images];
   return caps.some(c => ["blocked", "auth_required"].includes(c.status)) || result.errors.some(e => ["source", "resolve", "acquire", "overview_acquire", "detail_acquire"].includes(e.stage.split("/").at(-1)!) && ["ACCESS_BLOCKED", "AUTH_REQUIRED", "RATE_LIMITED", "HTTP_412"].includes(e.code));
@@ -62,6 +67,14 @@ export function missingNotePages(result: NoteResearchResult, mode: LinkResearchT
   });
 }
 export function sourceProgress(record: LinkResearchTaskRecord, source: LinkResearchSource): LinkResearchTaskView["progress"][number] {
+  if (record.follow_up) {
+    if (record.request.mode === "language") {
+      const material = sourceSnapshot(record, source);
+      return { source_id: source.id, status: material?.result.evidence.length ? material.result.status : "unavailable", can_continue: false, reason: material?.result.evidence.length ? "retained_text_scope_only" : "no_retained_source_text" };
+    }
+    // Fresh visual coverage belongs to its native pass, not the merged text snapshot.
+    return sourceProgress({ ...record, request: { ...record.request, mode: "vision" }, follow_up: undefined }, source);
+  }
   const receipt = latestSourceReceipt(record, source), material = materialForSource(record, source);
   if (!receipt) return { source_id: source.id, status: "pending", can_continue: true, reason: "not_started" };
   const result = material && material.kind !== "session" ? material.result : null;

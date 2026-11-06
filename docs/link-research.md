@@ -34,11 +34,12 @@ delete_research_task({ task_id: "<task.id>" })
 | --- | --- |
 | `start_research_task` | 保存链接、问题和固定预算，并执行最多 3 步初始研究。 |
 | `continue_research_task` | 继续同一个任务；`max_steps` 范围 1–4，默认 3，不重置预算。 |
+| `follow_up_research_task` | 针对同一批已读来源提出新问题，保存独立文字快照与子任务预算。 |
 | `get_research_task` | 读取保存的任务、进度、材料及对照是否已更新，不发起研究。 |
 | `list_research_tasks` | 列出本地链接任务的问题、来源、状态和预算，不请求平台或 Provider。 |
 | `delete_research_task` | 删除一个未被执行进程占用的链接任务；关联视频 session 单独保留。 |
 
-宿主负责把对话中的“继续”关联到正确的任务 UUID。问题与来源集合在任务内固定；改问题或选择其他来源应开始新任务。工具只处理已给出的来源，没有候选搜索、后台续跑或自主扩展来源。
+宿主负责把对话中的“继续”关联到正确的任务 UUID。问题与来源集合在单个任务内固定；针对同一批来源改问新问题，用 `follow_up_research_task` 创建独立子任务，复用已有原始文字并保留父研究。选择其他来源仍应开始新的链接任务。追问的 `answer`／`answer_current`、新视觉读取及独立预算见[连续追问](./task-followup.md)。工具只处理已给出的来源，没有候选搜索、后台续跑或自主扩展来源。
 
 ## 读取顺序与结果
 
@@ -137,7 +138,7 @@ npm run task -- delete TASK_UUID
 npm run task -- continue TASK_UUID /absolute/path/continue-input.json
 ```
 
-`start` 和 `continue` 通过编译后的 stdio 服务调用新任务工具，返回任务视图。`show` 读取原始保存记录，`list`、`show`、`delete` 均可管理 v1 与 v2，且不启动服务或调用 Provider。MCP 的五个任务工具只管理 v2 链接任务；旧 v1 的 `create`、明确选择动作 key 的 `run` 保留原有[一轮补读契约](./research-tasks.md)。
+`start`、`continue` 和 `follow-up` 通过编译后的 stdio 服务调用任务工具，返回任务视图。`show` 读取原始保存记录，`list`、`show`、`delete` 均可管理 v1 与 v2，且不启动服务或调用 Provider。MCP 的六个任务工具只管理 v2 链接／追问任务；旧 v1 的 `create`、明确选择动作 key 的 `run` 保留原有[一轮补读契约](./research-tasks.md)。
 
 ## 设计参考
 
