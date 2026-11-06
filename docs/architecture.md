@@ -1,117 +1,76 @@
-# Catalyst 首版架构
+# Catalyst 架构
 
-Catalyst 将平台获取与研究流程分开：平台 Adapter 提供统一素材，共用 ResearchEngine 决定如何使用字幕、音频和画面，MCP 层向宿主返回结构化结果与可读文本。当前覆盖 B 站、YouTube 和实验性小红书视频／图文笔记，保留 BVR 的旧工具以便渐进迁移。
+Catalyst 为宿主 Agent（harness）读取单个视频或笔记，返回原始文字、源时间／图片页码、覆盖范围、可用状态和该来源的模型分析。平台获取、字幕／ASR、图片 OCR、视频窗口准备和单来源分析由 Catalyst 完成；对话上下文、来源选择、多个来源的综合与比较、换问题后的回答由宿主负责。
 
-长视频使用 `analyze_long_video_url`：`long-video.ts` 在共享期限和文件预算内编排概览与精读，`media-window.ts` 负责按源时间获取、验证及准备有界媒体。分段结果、概览覆盖、精读覆盖和未读区间随结果返回，失败段不能作为最终 Findings 的引用来源。B 站通用与兼容入口共用分 P 解析，CID、时长和下载 URL 对齐，并保留 `metadata.part_title`。具体约束见[长视频设计与验收](./long-video.md)。
+用户先提供 A、B，再补充 C 时，宿主保留 A、B 的工具结果，只调用来源工具读取 C。新问题可以直接使用已有原始文字。长视频证据不在上下文时，`get_research_session` 可只读取回；图文结果由宿主保留。无需在 Catalyst 创建一个覆盖这些对话的多来源研究或子任务。
 
-长视频入口默认保存本地研究记录；`resume_long_video_research` 在重新核对来源和配置后复用已完成段，只处理失败或未完成段。每段结束时原子保存进度，服务重启后可恢复最近成功写入的检查点。记录只包含脱敏后的结果、字幕／转写和引用，不持久保存媒体；其他独立研究调用之间仍没有共享缓存。具体契约见[研究记录与断点续跑](./research-sessions.md)。
+## 默认调用路径
 
-`follow_up_long_video_research` 用父记录已完成概览的字幕／ASR 研究新问题，并创建独立子记录。相关性、焦点、报告与答案重新生成；多模态追问先做语言概览，再获取新的音画精读窗口。全部可复用原始文本在首次子记录检查点保存，恢复不依赖父记录。具体契约见[同一视频的连续追问](./long-video-followup.md)。
+`analyze_long_video_url` 读取一个完整视频、B 站分 P 或显式所选范围，在共享期限和文件预算内进行分段概览与有界精读。`long-video.ts` 保留分段状态，`media-window.ts` 按源时间获取、校验和准备媒体。概览、精读和未读区间分别报告；失败段不能作为最终 Findings 的引用来源。B 站入口统一解析分 P，确保 CID、时长、下载 URL 和 `metadata.part_title` 一致。详见[长视频读取](./long-video.md)。
 
-`discover_bilibili_videos` 是研究前的独立候选发现入口。它在查询数、返回数、响应字节和共享期限内取得匿名搜索元数据，规范化来源身份并按实际查询排名融合排序；不取得媒体或生成内容证据。宿主规划检索词、选择候选，再调用现有研究入口。搜索命中不代表媒体可访问，稿件级结果也不等于已选定某个分 P。具体契约与联网设计参考见[B 站候选发现](./discovery.md)。
+长视频默认保存读取检查点。`resume_long_video_research` 核对来源和配置后，只处理未完成或失败段，保留已完成段的原始文字、报告和引用，再重新综合该来源的回答。每段结束后原子写入脱敏快照，服务重启后仍可恢复。记录不保存媒体、凭据或签名获取地址。`get_research_session` 和 `list_research_sessions` 不调用来源或 Provider；`delete_research_session` 只删除未被运行进程占用的本地记录。详见[保存与恢复](./research-sessions.md)。
 
-`compare_research_materials` 对宿主选定的 2–3 份已读视频／图文结果或保存会话进行纯文本对照。准备层保留证据的来源、时间／页码及原 ID，并隔离材料命名空间；代码生成连续摘录，模型选择编号并提出逐材料立场，程序回填引用、校验后重算关系和可读答案。源文本可按新问题重新分析，同问题有效视觉 Finding 只作为派生观察。工具不获取新媒体，来源独立性保持未知。具体设计与联网参考见[多来源证据对照](./comparison.md)。
+`analyze_video_url` 处理一个视频或明确时间窗，通用媒体窗口至多 900 秒；`analyze_xiaohongshu_note` 读取笔记正文、按页 OCR 或图片画面，确认是视频时路由到视频引擎。`analyze_video`、`inspect_video_window` 和 `analyze_bilibili_video` 保留原 BVR 接口。模型调用可形成来源内部的报告，但跨来源结论由宿主组织。
 
-`plan_research_followup` 是宿主执行前的确定性补读规划。它只读 1–3 份结果或保存记录，按明确证据通道和范围目标检查覆盖，返回现有研究／续跑／发现工具的有界参数。规划不调用模型或平台，也不执行或保存动作；宿主维护轮次与尝试历史，执行所选建议后带回新证据。对照的单来源或未涉及状态不能单独触发补读。具体契约与联网取舍见[有界补读规划](./research-followup-plan.md)。
-
-## 调用路径
-
-链接任务通过 `start_research_task` 接收 1–3 个已选择的来源和问题，`continue_research_task` 沿用任务 ID、材料和剩余额度，`get_research_task`、`list_research_tasks`、`delete_research_task` 管理本地记录。`link-research.ts` 以确定顺序直接调用已有引擎：视频使用可保存的长视频研究，小红书先识别图文／视频，多个已读来源进入现有文本对照。它不递归启动 MCP 服务，不搜索或自主扩展来源；宿主决定何时开始和继续。首次最多 3 步，续跑最多 4 步，每次调用内同一来源最多读一次，未读来源优先。详见[从链接开始研究与继续](./link-research.md)。
-
-`research-task-cli.ts` 的 `start`／`continue` 通过编译后的 stdio 服务调用链接任务工具。旧 `create`／`run` 继续使用 `research-tasks.ts` 的 v1 固定补读计划与明确选择的动作 key，契约见[一轮补读与恢复](./research-tasks.md)。v2 链接任务与 v1 共用 `research-task-store.ts` 的通用原子快照、版本和进程锁；CLI 查看／列出／删除兼容两种记录，MCP 任务工具只管理 v2。调用意图及完整期限预留在外部工作前保存，结果校验后再记录；遗留在途调用转为未知并停止，不能自动重放。
-
-链接任务按来源保留证据：长视频续跑复用成功窗口并重新综合；图文保留各次读取的页码、通道及报告，合并证据时隔离 ID，报告仍表达各自范围。来源后续解析失败时，旧可用材料继续保留并标明新失败。`comparison_current` 由当前来源结果与对照的输入历史决定，防止旧对照冒充已包含新证据的结论。单篇图文多次读取不会额外生成整篇综合，宿主基于保留证据回答。
-
-`follow_up_research_task` 在父任务锁内取得确认材料及 revision，将原始字幕／ASR／正文／OCR 保存到独立子任务，不复制旧报告、Findings 或视觉观察。语言追问只从快照生成新问题的引用回答，不访问来源或补齐父缺口；显式视觉追问做新的 `vision` 读取，再按所选通道组合证据。内部 `answerResearchMaterials` 与原对照共用摘录及引用校验，但允许单来源回答，并返回独立的 `answer`／`answer_current`。子任务预算、检查点及未知结果处理沿用链接任务，不依赖父任务或父 session 后续存在。详见[任务级连续追问](./task-followup.md)。
+`discover_bilibili_videos` 取得有界匿名搜索元数据，规范化身份并按实际查询排名融合排序。宿主选择候选后，再调用读取工具核对实际来源、分 P 和时长并获取内容证据。搜索标题、简介和排名不是已读证据，命中不证明媒体可获取。详见[候选发现](./discovery.md)。
 
 ```mermaid
 flowchart TD
-  Host[宿主 Agent] --> MCP[MCP analyze_video_url]
-  Host --> Task[MCP start / continue_research_task]
-  Host --> FollowUp[MCP follow_up_research_task]
-  FollowUp --> Snapshot[父 revision 和原始文字快照]
-  Snapshot --> Task
-  Task --> Long[可恢复长视频引擎]
-  Task --> Note[图文研究引擎]
-  Task --> Ledger[来源证据 调用意图和结果 累计额度]
-  Task --> Compare
-  Task --> Answer[answerResearchMaterials]
-  Answer --> Validated
-  Ledger --> Task
-  Task --> Host
-  Host --> Discovery[MCP discover_bilibili_videos]
+  Host[Harness 对话上下文 来源选择 比较与回答] --> Read[单来源 MCP 读取]
+  Host --> Discovery[discover_bilibili_videos]
   Discovery --> Search[B 站匿名搜索元数据]
-  Search --> Candidates[DiscoveryResult 未读候选]
+  Search --> Candidates[未读候选]
   Candidates --> Host
-  MCP --> Engine[ResearchEngine]
-  Engine --> Route[平台路由]
-  Route --> Bili[BilibiliAdapter]
-  Route --> YT[YouTubeAdapter]
-  Route --> XHS[XiaohongshuAdapter]
-  Bili --> Source[SourceContext 和 MediaAsset]
-  YT --> Source
-  XHS --> Source
+  Read --> Engine[单来源 ResearchEngine]
+  Engine --> Adapter[平台 Adapter]
+  Adapter --> Source[身份 字幕 正文 图片与媒体]
   Source --> Engine
-  Engine --> Transform[FFmpeg 媒体处理]
-  Transform --> Provider[StepFun 或 Gemini]
-  Provider --> Result[ResearchResult]
-  Result --> MCP
-  Host --> Compare[MCP compare_research_materials]
-  Result --> Host
-  Compare --> Prepared[已选材料和证据定位]
-  Prepared --> TextProvider[一次文本 Provider 对照]
-  TextProvider --> Validated[校验引用和立场 重算对照关系]
-  Validated --> Host
-  Host --> Plan[MCP plan_research_followup]
-  Plan --> Coverage[只读材料 合并来源覆盖]
-  Coverage --> Bounded[缺口 历史与预算检查]
-  Bounded --> Actions[有类型 next_actions]
-  Actions --> Host
+  Engine --> Prepare[有界窗口 OCR ASR 媒体准备]
+  Prepare --> Raw[原始证据与源定位]
+  Raw --> Provider[StepFun 或 Gemini 单来源分析]
+  Raw --> Evidence[来源结果 证据 覆盖与未核验 Findings]
+  Provider --> Evidence
+  Evidence --> Host
+  Engine --> Checkpoint[长视频分段检查点]
+  Host --> Session[get list delete session]
+  Session --> Checkpoint
+  Checkpoint --> Evidence
+  Host --> Resume[resume_long_video_research]
+  Checkpoint --> Resume
+  Resume --> Engine
 ```
+
+默认共 11 个工具：3 个原 BVR 工具、`analyze_video_url`、`analyze_long_video_url`、`analyze_xiaohongshu_note`、`discover_bilibili_videos`，以及 4 个长视频 session 管理／恢复工具。每次读取接受一个来源，来源组合和对话轮次由宿主管理；各次读取仍有自己的范围、期限和材料预算。
 
 ## 模块职责
 
-| 模块 | 职责 |
+| 默认来源层模块 | 职责 |
 | --- | --- |
-| `src/link-research-contracts.ts` | 链接任务、来源、调用历史、累计预算和返回视图契约。 |
-| `src/link-research-schema.ts` | 链接任务请求与保存记录校验，动作身份及嵌套长视频结果保留。 |
-| `src/link-research.ts` | 从链接开始的有界读取、显式续跑、比较更新、预算和状态检查点。 |
-| `src/link-research-materials.ts` | 保留来源材料，合并图文通道覆盖，隔离分次引用与报告范围。 |
-| `src/link-research-receipts.ts` | 新访问链接与返回结果的来源、分 P、窗口／页码及引用校验。 |
-| `src/link-research-tools.ts` | 六个链接／追问任务 MCP 工具、参数适配与安全错误返回。 |
-| `src/task-followup-materials.ts` | 原始文字快照、父来源关联、复用与新视觉证据组合，以及回答输入身份。 |
-| `src/research-source-evidence.ts` | 研究来源 URL、身份、分 P 和原始证据范围的共享校验。 |
-| `src/link-research-store.ts` | v2 链接记录及 v1／v2 通用读取适配，共用快照存储。 |
-| `src/research-task-store.ts` | 两种任务共用的有界私有快照、版本比较、原子写入与进程锁。 |
-| `src/research-tasks.ts` | v1 固定补读计划的明确动作选择、执行与恢复。 |
-| `src/research-task-cli.ts` | stdio 参考宿主、链接任务及固定补读命令、本地管理命令。 |
-| `src/contracts.ts` | 平台身份、能力、字幕、媒体、Evidence、Finding、失败和结果契约。 |
-| `src/followup-plan-contracts.ts` | 补读材料、证据目标、缺口、动作、宿主历史与停止结果契约。 |
-| `src/followup-plan-schema.ts` | 规划请求、独立结果及各现有工具建议参数的 Schema。 |
-| `src/followup-plan-materials.ts` | 只读结果／保存记录校验，提取来源身份、证据通道和可用覆盖。 |
-| `src/followup-plan.ts` | 合并同源覆盖，按目标计算缺口，应用预算／历史并产生有界建议。 |
-| `src/comparison-contracts.ts` | 所选材料、命名空间证据、逐材料立场及独立对照结果契约。 |
-| `src/comparison-schema.ts` | 对照请求、逐条模型输出和独立结果 Schema。 |
-| `src/comparison-materials.ts` | 已读结果／只读会话准备、身份与覆盖检查、文本和派生观察的证据映射。 |
-| `src/comparison.ts` | 一次文本对照、逐材料引用校验、关系重算和有效答案构造。 |
-| `src/discovery-contracts.ts` | 候选、查询执行、排名依据、发现预算与独立结果契约。 |
-| `src/discovery-schema.ts` | 发现工具的严格请求校验及独立结果 Schema。 |
-| `src/discovery.ts` | 有界查询执行、状态保留、身份去重、RRF 排序与候选返回上限。 |
-| `src/bilibili-search.ts` | 匿名搜索响应获取、字节限制、元数据规范化和访问错误识别。 |
-| `src/result-schema.ts` | 与 MCP 工具发现一同暴露的结果 Schema，校验结构和字段；不承担结论语义验证。 |
-| `src/process.ts` | 有期限和共享输出上限的子进程执行，以及取消时的进程组或进程树清理。 |
-| `src/adapters/` | 校验来源 URL，取得元数据与语言素材，按平台管理可选评论和认证范围。 |
-| `src/acquisition.ts` | 选择下载器运行环境、执行有界 yt-dlp 请求、取得媒体及实际质量、清理临时产物。 |
-| `src/research.ts` | 三种研究模式、窗口校验、期限、证据组织、模型结果引用结构检查及部分失败结果。 |
-| `src/long-video.ts` | 长视频概览、精读、分段检查点、恢复、追问执行及覆盖报告。 |
-| `src/long-video-continuation.ts` | 续跑来源、原问题、窗口计划和已完成段引用的兼容性校验。 |
-| `src/long-video-materials.ts` | 追问的父记录与计划校验，仅提取已完成概览的原始语言证据。 |
-| `src/research-sessions.ts` | 记录执行、Provider 兼容标识、持久快照脱敏、续跑预算覆盖及独立追问记录。 |
-| `src/research-session-store.ts` | 本地研究记录、原子写入、版本校验、会话锁和显式删除。 |
-| `src/video-analysis.ts` | 静音、音轨与片段变换，StepFun 和 Gemini 调用，兼容旧调用签名。 |
-| `src/media-quality.ts` | 显式质量目标与格式选择、实际质量评估。 |
-| `src/index.ts` | MCP 输入输出、通用入口与兼容入口。 |
-| `src/doctor.ts` | 本机依赖版本与配置存在性诊断，不进行平台或模型请求。 |
+| `src/index.ts` | 默认 stdio 启动入口。 |
+| `src/mcp-server.ts` | `createCatalystServer()`，注册 11 个来源读取、搜索及 session 工具，适配 MCP 输入输出。 |
+| `src/contracts.ts`、`src/result-schema.ts` | 来源身份、能力、Evidence、Finding、失败与结构化结果；校验字段和引用结构，不裁决语义。 |
+| `src/adapters/` | URL 与来源身份校验，平台元数据和字幕获取，可选评论及平台认证。 |
+| `src/acquisition.ts`、`src/media-window.ts` | 下载器选择、有界媒体获取、时间窗验证、实际质量和临时产物清理。 |
+| `src/research.ts` | 单视频三种证据模式、窗口与期限、证据组织、引用校验及部分失败。 |
+| `src/long-video.ts`、`src/long-video-continuation.ts` | 单视频分段概览与精读、检查点、覆盖和续跑兼容校验。 |
+| `src/research-sessions.ts`、`src/research-session-store.ts` | 长视频持久快照、Provider 兼容性、原子保存、版本与锁、恢复和显式删除；原有的新问题追问分支由兼容层调用。 |
+| `src/note-research.ts`、`src/note-contracts.ts`、`src/note-result-schema.ts` | 小红书正文、逐页 OCR／视觉证据及确认后的视频路由。 |
+| `src/discovery.ts`、`src/bilibili-search.ts`、`src/discovery-contracts.ts`、`src/discovery-schema.ts` | 有界候选查询、身份去重、排名依据、访问状态与独立候选契约。 |
+| `src/video-analysis.ts`、`src/media-quality.ts` | 静音、音轨和片段准备，StepFun／Gemini 调用与质量选择。 |
+| `src/process.ts` | 有期限和输出上限的子进程，取消时清理进程组或进程树。 |
+| `src/doctor.ts` | 本机依赖与配置存在性检查，不调用平台或 Provider。 |
+
+| 兼容编排层模块 | 保留职责 |
+| --- | --- |
+| `src/legacy-research.ts`、`src/legacy-workflow-tools.ts` | 显式兼容 stdio 入口，注册额外 9 个旧流程工具。 |
+| `src/link-research.ts`、`src/link-research-contracts.ts`、`src/link-research-schema.ts`、`src/link-research-tools.ts` | 固定问题和 1–3 来源的旧链接任务、追问、预算与 MCP 适配。 |
+| `src/link-research-materials.ts`、`src/link-research-receipts.ts`、`src/task-followup-materials.ts` | 来源材料合并、回执验收、父子文字快照与新视觉证据。 |
+| `src/link-research-store.ts`、`src/research-task-store.ts` | v1／v2 任务读取兼容，原子快照、版本和跨进程锁。 |
+| `src/research-tasks.ts`、`src/research-task-cli.ts` | v1 固定动作轮次、任务 CLI；CLI 自动连接兼容服务。 |
+| `src/followup-plan*.ts` | 旧确定性覆盖规划、缺口、历史与有界动作建议。 |
+| `src/comparison*.ts` | 已选材料的摘录和引用校验、一次文本对照或追问回答。 |
+| `src/long-video-materials.ts` | 旧长视频新问题分支的原始语言材料提取和父记录校验。 |
+| `src/research-source-evidence.ts` | 兼容任务／快照的来源、分 P 和原始证据范围校验。 |
 
 ## 统一素材
 
@@ -153,11 +112,7 @@ flowchart TD
 
 ## 质量与预算
 
-链接任务的累计声明期限默认 1,800 秒、最多 3,600 秒；来源步骤默认 240 秒，对照预留 `min(120, action_timeout_seconds)` 秒，每步整额预留且不退款。累计动作默认 12、最多 16，重启和继续均不重置。视频默认 600 秒概览段、最多 12 段，超限在预检时拒绝而非截断；每次视频调用的 128 MiB 获取文件额度不跨任务累计。v1／v2 共用最多 100 条、每条 8 MiB 的本地任务存储。关联视频 session 单独管理，删除任务不会删除 session。比较工具原有的每材料 80 项证据及 2 MiB 输入限制可使对照不可用，但不能使已保存的研究结果被丢弃。
-
-补读规划只从结果里已有的通道、范围、身份、读取错误及显式搜索词推导动作，不从问题文字猜测需要整片或画面。默认继承各材料原模式，只检查原请求范围；宿主明确要求完整来源时才生成范围扩展。相同来源的互补覆盖先合并，旧问题视觉观察不能充作新问题覆盖。缺少可靠范围时保留选择条件；访问受阻不盲目重试，搜索阻断也不能推断媒体获取受阻。动作按目标工具 Schema 校验，新视频读取／图片页读取有单动作上限，保存记录续跑另按原窗口计划、期限与获取预算执行；轮次、来源、动作与已尝试 key 限制剩余建议。输入最多 2 MiB，本次规划默认 10 秒，模型及执行计数固定为零。历史由宿主传入，工具没有后台循环、持久账本或语义充分性裁决。
-
-多来源对照使用独立的结果契约。其 `source_text` 引用已有字幕／ASR／正文／OCR，`derived_observation` 引用同问题下通过原引用校验、且只涉及同一定位的视觉 Finding；原 Finding 联合引用不同窗口或页码时整条排除，不复制成伪局部支持。两种证据都保留原有读取限制。代码预先生成最多 180 字符的连续摘录目录，模型选择编号，程序把原文和原证据定位回填到支持或反驳立场，再验证归属和精确子串。程序重算共同说法、分歧、单来源和证据不足；原最终 `analysis` 不进入模型提示。本轮只读已有会话，输入最多 2 MiB，准备提示最多 200,000 字符，最多一次文本 Provider 调用，不创建新的比较会话或自动发起资料补读。引用结构校验不能代替语义核验，跨来源的独立性不作推断。
+长视频按完整所选视频或分 P 规划概览，默认每段 600 秒、最多 12 段；超出预检上限时拒绝，不截断为开头采样。默认共享期限为 900 秒，最多 1,800 秒；单窗口默认 180 秒，可在 15–600 秒内设置。累计获取文件预算默认 512 MiB，单份准备后的媒体不超过 32 MiB；每段完成后清理临时媒体。概览上传最高 360p、1 fps，精读最高 720p、5 fps；完整概览不证明逐帧或逐公式理解。详见[长视频设计](./long-video.md)。
 
 通用入口在未指定 `source_quality` 时使用可用源并报告实际质量。视觉和多模态下载默认优先选择不超过 1080p 的格式，源回退以实际报告为准；媒体文件预算默认 256 MiB，可通过 `CATALYST_MAX_MEDIA_MB` 调整。显式质量请求沿用 BVR 的标准档、高档和自定义档，目标不满足时默认报错。旧 B 站工具保留默认严格 1080p30 的语义。
 
@@ -165,9 +120,7 @@ flowchart TD
 
 长视频记录保存自身已完成分段的字幕／转写、报告和引用，用于恢复同一个问题。复用前验证平台身份、分 P、时长、模式、原问题、语言、画质、计划及分析配置；失败段与不完整报告重新处理。续跑后用有效分段重新综合，不复用旧的最终答案。下载量和阶段耗时表示本次调用，已保存的覆盖不计作本次获取。
 
-独立研究调用之间没有共享媒体／转写缓存，也不在原记录中更换问题。跨问题复用通过显式追问完成：校验父记录和当前来源后，复制已完成概览的原始语言证据，继承范围、概览划分、语言与画质，重新生成新问题的分析。纯语言追问无媒体或 ASR 调用；多模态追问的概览仍只有语言覆盖，新精读会获取音画并转写。缺失语言材料不自动补取，也不由父报告替代。
-
-追问返回独立记录 ID，`follow_up` 指向父记录 ID、版本和已复制证据。父记录不被追问覆盖；子记录保存自己的原始文本、报告和覆盖，可独立恢复。首次追问没有跳过新问题报告，`session.reused_segments` 为零；之后恢复子记录时按原续跑规则计算。媒体缓存和 Provider 上下文复用仍属于后续工作。
+独立读取调用之间没有共享媒体／转写缓存；保存记录只恢复其固定问题与窗口计划。跨问题对话由宿主使用已有原始字幕、ASR、正文或 OCR 回答。需要新的画面证据时，宿主选择明确时间窗或图片页，再发起一次来源读取。旧分析和视觉 Findings 继续保留原问题及派生观察性质，不升级为新问题的原始证据。
 
 ## 运行环境和认证
 
@@ -177,6 +130,12 @@ B 站仅使用 `BILIBILI_COOKIES_*` 配置，YouTube 仅使用 `YOUTUBE_COOKIES_
 
 B 站候选发现单独使用匿名 Web 搜索路径，不读取上述下载器 Cookie 配置或浏览器登录态。首版每查询最多一页，不自动重试；HTTP 响应受 1 MiB 上限约束。阻断、认证要求或限流会停止剩余查询，普通单查询错误与成功候选一起保留。匿名路径可受平台限制，不能由一次返回成功宣称长期稳定。
 
-## 兼容边界
+## 旧流程兼容
 
-现有 `analyze_bilibili_video`、`analyze_video`、`inspect_video_window` 保留，原有 BVR 测试继续作为回归基线。通用研究结果、候选发现结果与旧文本呈现分别维护。B 站发现提供候选，跨平台搜索、长期调度和整体 Research Agent 编排仍由后续工作或宿主负责。
+默认 `src/index.ts` 只启动 `createCatalystServer()`，注册 11 个来源工具。`src/legacy-research.ts` 是单独的兼容入口：在相同来源工具上调用 `registerLegacyWorkflowTools()`，增加旧有 9 个流程工具。默认入口不导入该注册器；宿主不会在默认工具发现中看到多来源任务、对照、规划或追问。编译后显式使用 `node /absolute/path/to/Catalyst/dist/legacy-research.js` 才暴露全部 20 个工具。
+
+兼容层包括 `start_research_task`、`continue_research_task`、`follow_up_research_task`、`get_research_task`、`list_research_tasks`、`delete_research_task`、`compare_research_materials`、`plan_research_followup` 和 `follow_up_long_video_research`。它保留既有 v1／v2 任务、比较引用校验、父子快照和预算／未知结果契约，用于继续已有集成。`research-task-cli.ts` 明确连接兼容入口；本地查看／列出／删除仍不启动服务或请求 Provider。已有任务和视频 session 不迁移、不删除，默认来源工具也可读取已有长视频 session。
+
+这些流程属于兼容编排层，新宿主在自己的上下文中处理多个来源、换问题和比较。具体旧契约见[链接任务](./link-research.md)、[任务追问](./task-followup.md)、[多来源对照](./comparison.md)、[补读规划](./research-followup-plan.md)、[一轮任务](./research-tasks.md)与[长视频追问](./long-video-followup.md)。
+
+原 BVR 的 `analyze_bilibili_video`、`analyze_video`、`inspect_video_window` 仍在默认来源工具中，原有测试继续作为回归基线。通用结构化结果、候选发现结果与旧文本呈现分别维护。跨平台搜索和后台调度未实现。

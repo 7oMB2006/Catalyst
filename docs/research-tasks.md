@@ -1,5 +1,7 @@
 # 宿主侧的一轮补读与任务恢复
 
+> 兼容路径：本页的任务、规划、对照或追问工具仅由 `node dist/legacy-research.js` 暴露；默认 `node dist/index.js` 不注册这些工具。`npm run task -- ...` 自动使用兼容入口，已有记录无需迁移。新接入由 harness 管理上下文、来源选择、比较和追问，Catalyst 提供逐来源读取及读取进度恢复。见[默认使用方式](../README.zh-CN.md)。
+
 这是现有 MCP 工具的参考宿主和可嵌入 TypeScript 执行器。它以已有 2–3 份材料创建固定补读计划，由宿主明确选择动作，顺序调用现有工具，保存结果和预算。MCP 服务本身仍只提供研究工具；没有新增自主研究 Agent。
 
 ## 使用
@@ -37,7 +39,7 @@ npm run task -- list
 npm run task -- delete TASK_UUID
 ```
 
-`create` 只调用 `plan_research_followup`，不会执行补读。`run` 首次必须提供一个或多个计划中的 key；调用方不能传任意工具名或自行替换参数。首轮选择固定后，后续只能继续同一组动作。执行顺序沿用计划顺序。CLI 的 `create` 和 `run` 启动当前安装中的编译后 stdio MCP 服务，继承其显式 Provider／平台配置；其余命令只读写本地记录。CLI 输出 JSON，服务日志不混入输出。
+`create` 只调用 `plan_research_followup`，不会执行补读。`run` 首次必须提供一个或多个计划中的 key；调用方不能传任意工具名或自行替换参数。首轮选择固定后，后续只能继续同一组动作。执行顺序沿用计划顺序。CLI 的 `create` 和 `run` 启动当前安装中的编译后兼容 stdio MCP 服务 `dist/legacy-research.js`，继承其显式 Provider／平台配置；其余命令只读写本地记录。CLI 输出 JSON，服务日志不混入输出。
 
 嵌入其他宿主时，调用 `createResearchTask` 和 `runResearchTask`，传入实现 `ResearchTaskHost.callTool(name, arguments, signal)` 的已有 MCP 连接。回调返回工具的 `structuredContent`；参考 CLI 中的 `createMcpResearchTaskHost` 展示期限和取消传递。宿主继续负责问题、来源选择和后续综合。
 

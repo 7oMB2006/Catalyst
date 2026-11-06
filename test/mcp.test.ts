@@ -5,9 +5,11 @@ import { followupPlanResultSchema } from "../src/followup-plan-schema.js";
 import type { ResearchResult } from "../src/contracts.js";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
+import { execFile } from "node:child_process";
 import { promises as fs } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { pathToFileURL } from "node:url";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { CallToolResultSchema } from "@modelcontextprotocol/sdk/types.js";
@@ -15,13 +17,21 @@ import { longVideoResultSchema } from "../src/long-video-schema.js";
 import { researchLongVideo } from "../src/long-video.js";
 import { ResearchSessionStore, type ResearchSessionRecord } from "../src/research-session-store.js";
 
-async function connect(directory: string) {
+let compiledServer: Promise<void> | undefined;
+function buildServer(): Promise<void> {
+  return compiledServer ??= new Promise((resolve, reject) => {
+    execFile(process.execPath, ["node_modules/typescript/bin/tsc", "-p", "tsconfig.build.json"], {cwd:process.cwd(),maxBuffer:1024*1024}, error => error ? reject(error) : resolve());
+  });
+}
+
+async function connect(directory: string, entry = "index", options: { hook?: string; compiled?: boolean; env?: Record<string, string> } = {}) {
+  if (options.compiled) await buildServer();
   const transport = new StdioClientTransport({
     command: process.execPath,
-    args: ["--import", "tsx", "src/index.ts"],
+    args: [...(options.hook ? ["--import", pathToFileURL(options.hook).href] : []), ...(options.compiled ? [`dist/${entry}.js`] : ["--import", "tsx", `src/${entry}.ts`])],
     cwd: process.cwd(),
     stderr: "pipe",
-    env: { ...Object.fromEntries(Object.entries(process.env).filter((entry): entry is [string, string] => entry[1] !== undefined)), CATALYST_SESSION_DIR: directory },
+    env: { ...Object.fromEntries(Object.entries(process.env).filter((entry): entry is [string, string] => entry[1] !== undefined)), CATALYST_SESSION_DIR: directory, ...options.env },
   });
   const client = new Client({ name: "catalyst-protocol-test", version: "1.0" });
   try { await client.connect(transport); return client; }
@@ -34,11 +44,149 @@ function textContent(response: ReturnType<typeof CallToolResultSchema.parse>): s
   return content.text;
 }
 
-test("stdio exposes legacy tools and returns structured routing failures", { timeout: 20_000 }, async () => {
+test("default stdio exposes source reading and recovery while rejecting every retired workflow without external work", { timeout: 20_000 }, async () => {
+  const directory = await fs.mkdtemp(join(tmpdir(), "catalyst default boundary "));
+  const sessions = join(directory, "sessions"), tasks = join(directory, "tasks");
+  const hook = join(directory, "reject-external.mjs"), log = join(directory, "external-work.log");
+  let client: Client | undefined;
+  await fs.mkdir(sessions); await fs.mkdir(tasks);
+  await fs.writeFile(hook, `
+import cp from "node:child_process";
+import { appendFileSync } from "node:fs";
+import { syncBuiltinESMExports } from "node:module";
+const blocked = kind => { appendFileSync(process.env.CATALYST_TEST_EXTERNAL_LOG, kind + "\\n"); throw new Error("Unexpected external work"); };
+globalThis.fetch = async () => blocked("fetch");
+cp.spawn = () => blocked("spawn");
+cp.execFile = () => blocked("execFile");
+syncBuiltinESMExports();
+`);
+  try {
+    client = await connect(sessions, "index", { hook, compiled: true, env: {
+      CATALYST_TASK_DIR: tasks, CATALYST_TEST_EXTERNAL_LOG: log, CODEX_VIDEO_PROVIDER: "unsupported-must-not-be-used",
+    } });
+    const tools = (await client.listTools()).tools;
+    assert.deepEqual(tools.map(tool => tool.name).sort(), [
+      "analyze_bilibili_video", "analyze_long_video_url", "analyze_video", "analyze_video_url", "analyze_xiaohongshu_note",
+      "delete_research_session", "discover_bilibili_videos", "get_research_session", "inspect_video_window",
+      "list_research_sessions", "resume_long_video_research",
+    ]);
+    const unknown = randomUUID();
+    for (const name of [
+      "start_research_task", "continue_research_task", "follow_up_research_task", "get_research_task",
+      "list_research_tasks", "delete_research_task", "compare_research_materials", "plan_research_followup", "follow_up_long_video_research",
+    ]) {
+      const response = CallToolResultSchema.parse(await client.callTool({ name, arguments: {} }));
+      assert.equal(response.isError, true, name);
+      assert.match(textContent(response), new RegExp(`Tool ${name} not found`));
+      assert.equal(response.structuredContent, undefined);
+    }
+    const longTool = tools.find(tool => tool.name === "analyze_long_video_url")!;
+    assert.ok(longTool.outputSchema); assert.equal(longTool.annotations?.readOnlyHint, false);
+    assert.equal((longTool.inputSchema.properties?.save_session as Record<string, unknown>).default, true);
+    assert.equal((longTool.inputSchema.properties?.segment_seconds as Record<string, unknown>).default, 600);
+    const resumeTool = tools.find(tool => tool.name === "resume_long_video_research")!;
+    assert.ok(resumeTool.outputSchema); assert.equal(resumeTool.inputSchema.properties?.question, undefined);
+    for (const name of ["get_research_session", "resume_long_video_research", "delete_research_session"]) {
+      const missing = CallToolResultSchema.parse(await client.callTool({ name, arguments: { session_id: unknown } }));
+      assert.equal(missing.isError, true); assert.equal(JSON.parse(textContent(missing)).error.code, "SESSION_NOT_FOUND");
+    }
+    const changedQuestion = CallToolResultSchema.parse(await client.callTool({
+      name: "resume_long_video_research", arguments: { session_id: unknown, question: "A later question belongs to the harness" },
+    }));
+    assert.equal(changedQuestion.isError, true); assert.match(textContent(changedQuestion), /unrecognized|question|unknown key/i);
+    assert.deepEqual((await client.callTool({ name: "list_research_sessions", arguments: {} })).structuredContent, { sessions: [] });
+    assert.deepEqual(await fs.readdir(sessions), []); assert.deepEqual(await fs.readdir(tasks), []);
+    await assert.rejects(fs.readFile(log), { code: "ENOENT" });
+  } finally {
+    await client?.close(); await fs.rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("compiled default stdio resumes only unfinished source windows across processes and preserves saved raw citations", { timeout: 20_000 }, async () => {
+  const directory = await fs.mkdtemp(join(tmpdir(), "catalyst default resume "));
+  const sessions = join(directory, "sessions"), tasks = join(directory, "tasks");
+  const hook = join(directory, "caption-provider.mjs"), log = join(directory, "requests.jsonl");
+  let client: Client | undefined;
+  await fs.mkdir(sessions); await fs.mkdir(tasks);
+  // Every response is local, and any acquisition subprocess or unlisted request fails.
+  await fs.writeFile(hook, `
+import cp from "node:child_process";
+import { appendFileSync } from "node:fs";
+import { syncBuiltinESMExports } from "node:module";
+const record = value => appendFileSync(process.env.CATALYST_TEST_REQUEST_LOG, JSON.stringify(value) + "\\n");
+const blocked = kind => { record({unexpected:kind}); throw new Error("Unexpected acquisition"); };
+cp.spawn = () => blocked("spawn"); cp.execFile = () => blocked("execFile"); syncBuiltinESMExports();
+const json = value => new Response(JSON.stringify(value), {headers:{"Content-Type":"application/json"}});
+globalThis.fetch = async (input, init = {}) => {
+  const url = new URL(typeof input === "string" ? input : input.url ?? input.toString());
+  if (url.hostname === "api.bilibili.com" && url.pathname === "/x/web-interface/view") {
+    record({kind:"metadata"});
+    return json({code:0,data:{aid:1,cid:2,title:"Two caption windows",desc:"Attention",duration:240,owner:{name:"Fixture",mid:1},pubdate:1,tname:"Knowledge",stat:{},pages:[{cid:2,duration:240,part:"Selected source"}]}});
+  }
+  if (url.hostname === "api.bilibili.com" && url.pathname === "/x/tag/archive/tags") return json({code:0,data:[]});
+  if (url.hostname === "api.bilibili.com" && url.pathname === "/x/player/v2") return json({code:0,data:{subtitle:{subtitles:[{subtitle_url:"https://captions.fixture/attention.json",lan:"en"}]}}});
+  if (url.hostname === "captions.fixture") {
+    record({kind:"captions"});
+    return json({body:[{from:0,to:120,content:"Queries and keys determine attention weights."},{from:120,to:240,content:"Values are combined using the resulting weights."}]});
+  }
+  if (url.hostname === "provider.fixture" && url.pathname === "/v1/chat/completions") {
+    const prompt = JSON.parse(init.body).messages[0].content;
+    const synthesis = prompt.includes("SYNTHESIS:");
+    const marker = synthesis ? "EVIDENCE:\\n\\n" : "PRIMARY EVIDENCE:\\n\\n";
+    const evidence = JSON.parse(prompt.slice(prompt.lastIndexOf(marker) + marker.length));
+    const primary = evidence.find(item => item.kind !== "metadata");
+    record({kind:"model",phase:synthesis ? "synthesis" : primary.id});
+    const report = !synthesis && primary.id === process.env.CATALYST_TEST_FAIL_WINDOW ? "unstructured partial fixture" : JSON.stringify({analysis:"The supplied captions describe attention.",findings:[{statement:"Attention uses query-key weights.",evidence_ids:[primary.id],limitations:["Fixture model interpretation"]}],relevance_score:1});
+    return json({choices:[{message:{content:report}}]});
+  }
+  return blocked(url.hostname + url.pathname);
+};
+`);
+  const env = {
+    CATALYST_TASK_DIR: tasks, CATALYST_TEST_REQUEST_LOG: log,
+    CODEX_VIDEO_PROVIDER: "stepfun", STEPFUN_BASE_URL: "https://provider.fixture/v1", STEPFUN_API_KEY: "fixture-unusable-resume-key",
+  };
+  const requests = async () => (await fs.readFile(log, "utf8")).trim().split("\n").map(line => JSON.parse(line) as {kind?: string; phase?: string; unexpected?: string});
+  try {
+    client = await connect(sessions, "index", { hook, compiled: true, env: { ...env, CATALYST_TEST_FAIL_WINDOW: "overview:2:source" } });
+    const started = CallToolResultSchema.parse(await client.callTool({ name: "analyze_long_video_url", arguments: {
+      url: "https://www.bilibili.com/video/BV1DTxXzUEvW/", question: "How are attention weights used?", mode: "language", language: "en",
+      segment_seconds: 120, max_detail_windows: 0, timeout_seconds: 15, window_timeout_seconds: 15,
+    } }));
+    assert.notEqual(started.isError, true);
+    const partial = longVideoResultSchema.parse(started.structuredContent);
+    assert.equal(partial.status, "partial"); assert.deepEqual(partial.segments.map(segment => segment.status), ["complete", "partial"]);
+    assert.deepEqual(partial.coverage.unreviewed, [{start_seconds:120,end_seconds:240}]); assert.ok(partial.session);
+    const retained = partial.evidence.filter(item => partial.segments[0].evidence_ids.includes(item.id));
+    assert.ok(retained.some(item => item.kind === "caption" && item.content?.includes("Queries and keys")));
+    const before = await requests();
+    assert.deepEqual(before.filter(item => item.kind === "model").map(item => item.phase), ["overview:1:source", "overview:2:source", "synthesis"]);
+    await client.close(); client = undefined;
+
+    client = await connect(sessions, "index", { hook, compiled: true, env: { ...env, CATALYST_TEST_FAIL_WINDOW: "" } });
+    const read = CallToolResultSchema.parse(await client.callTool({name:"get_research_session",arguments:{session_id:partial.session.id}}));
+    assert.deepEqual(longVideoResultSchema.parse(read.structuredContent), partial); assert.deepEqual(await requests(), before);
+    const resumed = CallToolResultSchema.parse(await client.callTool({name:"resume_long_video_research",arguments:{session_id:partial.session.id,timeout_seconds:15,window_timeout_seconds:15}}));
+    assert.notEqual(resumed.isError, true);
+    const complete = longVideoResultSchema.parse(resumed.structuredContent);
+    assert.equal(complete.status, "complete"); assert.equal(complete.session?.id, partial.session.id);
+    assert.equal(complete.session?.reused_segments, 1); assert.equal(complete.session?.processed_segments, 1);
+    assert.deepEqual(complete.segments[0], partial.segments[0]);
+    for (const item of retained) assert.deepEqual(complete.evidence.find(evidence => evidence.id === item.id), item);
+    assert.equal(complete.coverage.overview_complete, true); assert.deepEqual(complete.coverage.unreviewed, []);
+    const after = await requests(), fresh = after.slice(before.length);
+    assert.deepEqual(fresh.filter(item => item.kind === "model").map(item => item.phase), ["overview:2:source", "synthesis"]);
+    assert.ok(after.every(item => !item.unexpected)); assert.deepEqual(await fs.readdir(tasks), []);
+    const stored = CallToolResultSchema.parse(await client.callTool({name:"get_research_session",arguments:{session_id:partial.session.id}}));
+    assert.deepEqual(longVideoResultSchema.parse(stored.structuredContent), complete); assert.deepEqual(await requests(), after);
+  } finally { await client?.close(); await fs.rm(directory, {recursive:true,force:true}); }
+});
+
+test("the explicit legacy stdio entry retains all twenty tools and structured routing failures", { timeout: 20_000 }, async () => {
   const directory = await fs.mkdtemp(join(tmpdir(), "catalyst-protocol-"));
   let client: Client | undefined;
   try {
-    client = await connect(directory);
+    client = await connect(directory, "legacy-research");
     const tools = await client.listTools();
     assert.deepEqual(tools.tools.map((tool) => tool.name).sort(), [
       "analyze_bilibili_video", "analyze_long_video_url", "analyze_video", "analyze_video_url", "analyze_xiaohongshu_note", "compare_research_materials", "continue_research_task", "delete_research_session", "delete_research_task", "discover_bilibili_videos", "follow_up_long_video_research", "follow_up_research_task", "get_research_session", "get_research_task", "inspect_video_window", "list_research_sessions", "list_research_tasks", "plan_research_followup", "resume_long_video_research", "start_research_task",
@@ -182,7 +330,7 @@ test("stdio plans bounded follow-up actions without executing them and retains m
   const directory = await fs.mkdtemp(join(tmpdir(), "catalyst-protocol-plan-"));
   let client: Client | undefined;
   try {
-    client = await connect(directory);
+    client = await connect(directory, "legacy-research");
     const tools = await client.listTools(), tool = tools.tools.find((item) => item.name === "plan_research_followup");
     assert.ok(tool?.outputSchema);
     assert.equal(tool.annotations?.readOnlyHint, true); assert.equal(tool.annotations?.openWorldHint, false);

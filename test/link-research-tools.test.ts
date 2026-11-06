@@ -175,12 +175,12 @@ test("CLI show, list and delete read both task generations without starting MCP;
   } finally { await fs.rm(directory, { recursive: true, force: true }); }
 });
 
-test("compiled-independent stdio exposes task tools and reads local progress without provider setup", { timeout: 20_000 }, async () => {
+test("explicit legacy stdio exposes task tools and reads local progress without provider setup", { timeout: 20_000 }, async () => {
   const directory = await fs.mkdtemp(join(tmpdir(), "catalyst link stdio "));
   const view = readyView(), store = new LinkResearchTaskStore(directory);
   await store.withLock(view.task.id, () => store.save(view.task, null));
   const transport = new StdioClientTransport({
-    command: process.execPath, args: ["--import", "tsx", "src/index.ts"], cwd: process.cwd(), stderr: "pipe",
+    command: process.execPath, args: ["--import", "tsx", "src/legacy-research.ts"], cwd: process.cwd(), stderr: "pipe",
     env: { ...Object.fromEntries(Object.entries(process.env).filter((entry): entry is [string, string] => entry[1] !== undefined)), CATALYST_TASK_DIR: directory, CODEX_VIDEO_PROVIDER: "unsupported-must-not-be-used" },
   });
   const client = new Client({ name: "link-task-stdio-test", version: "1.0" });

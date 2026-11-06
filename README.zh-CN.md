@@ -16,7 +16,7 @@ Catalyst 为现有 Agent 提供 B 站候选发现、视频与小红书图文研�
 | 本地视频 | 保留视觉分析和静音片段检查工具。 |
 | 抖音 | 获取能力调查候选，尚不列为预览版支持平台。 |
 
-Discovery 从有界的 B 站候选搜索起步。对已选择的链接，持久任务衔接初次读取、保存进度、显式继续和证据对照；确定性补读规划也可单独建议下一步读取或搜索。查询规划、来源选择和整体对话由宿主 Agent 负责；跨平台搜索、自主研究循环和后台调度属于后续工作。
+Catalyst 逐个读取来源，返回证据、覆盖范围和该来源的分析。宿主 Agent（harness）管理对话上下文、选择资料、比较多个来源并组织回答。长视频检查点保存单个来源的读取进度；有界 B 站搜索为宿主提供候选，跨平台搜索尚未实现。
 
 ## 安装
 
@@ -69,48 +69,65 @@ npm start
 
 Provider 凭据放在进程环境或本地 `.env`，避免写入会提交到仓库的宿主配置。沿用的 `CODEX_VIDEO_PROVIDER` 是历史配置名：默认 `stepfun`，也可选择 `gemini`。
 
-## 贴链接研究，之后继续
+## 读取选定链接
 
-向宿主提供 1–3 条 B 站、YouTube 或小红书链接及问题，即可开始研究，无需先准备已读结果 JSON 或手动切视频：
+向宿主提供链接和问题。读取完整视频或选定 B 站分 P 时，使用分段入口，无需手动选择开头的一小段：
 
 ```text
-start_research_task({
-  urls: ["https://www.bilibili.com/video/BV1DTxXzUEvW/?p=17"],
+analyze_long_video_url({
+  url: "https://www.bilibili.com/video/BV1DTxXzUEvW/?p=17",
   question: "这一节课介绍了哪些自注意力机制，各自解决什么问题？",
-  mode: "language"
+  mode: "language",
+  language: "zh",
+  max_detail_windows: 0,
+  timeout_seconds: 1800
 })
 ```
 
-返回值包含 `task.id`、各来源进度和保留的证据。还有未完成内容时，用户之后说“继续”，宿主沿用此 ID：
+读取器规划所选来源范围内的全部概览窗口。B 站 `p` 只选择一个分 P，不读取整个合集。默认每段 600 秒、最多 12 个概览段；超出时在媒体获取前明确拒绝，不静默只读开头。问题需要图片、图表或可见动作时，选择 `vision` 或 `multimodal`。详见[长视频读取与限制](./docs/long-video.md)。
+
+| 模式 | 使用的证据 |
+| --- | --- |
+| `language` | 优先采用可用平台字幕，否则使用音频／ASR；不读取视频画面。 |
+| `vision` | 移除音轨后读取画面，画面中的可见文字仍可作为视觉证据。 |
+| `multimodal` | 使用音画两种通道，长视频另以显式 ASR 提供语言证据。 |
+
+概览媒体准备为最高 360p、1 fps，精读为最高 720p、5 fps。概览覆盖完整不等于每帧、每个公式都已读清。默认累计获取文件预算为 512 MiB、单份上传上限为 32 MiB、共享期限为 900 秒，可设置至 1,800 秒；宿主工具超时还需覆盖启动开销。预算或期限不足时保留部分报告。长视频按来源窗口获取媒体。
+
+### 保存与恢复读取进度
+
+长视频默认保存本地进度（`save_session: true`）。超时、取消或服务重启后，宿主可恢复同一问题尚未完成的读取：
 
 ```text
-continue_research_task({ task_id: "<task.id>" })
-get_research_task({ task_id: "<task.id>" })
-list_research_tasks({})
-delete_research_task({ task_id: "<task.id>" })
-```
-
-单个链接也能使用。视频按完整所选视频／分 P 规划有界分段，并非默认只读开头；图文保留原始页码及实际文字／视觉覆盖。一次调用内每个来源最多读取一次，未读链接优先；首次最多执行 3 步，继续时 `max_steps` 可设为 1–4，默认 3。取得 2–3 份材料后，可用一步对照已保留证据；`comparison_current` 明确说明对照是否已包含最新读取结果。
-
-默认任务额度为 1,800 秒，每次来源调用完整预留 240 秒，对照最多预留 120 秒，不退款；“继续”不重置额度。已完成工作保留，未能确认的调用停止等待核查，不会自动重放或后台续跑。查看、列出任务不请求来源或模型，删除任务也不删除关联视频 session。
-
-CLI 可用 `npm run task -- start /absolute/path/input.json`，输入采用 camelCase 的 `urls`、`question` 及可选预算，之后运行 `npm run task -- continue TASK_UUID`。完整输入、分享链接更新、图文分次报告及预算边界见[从链接开始研究与继续](./docs/link-research.md)。
-
-## 围绕已读来源继续追问
-
-比较两个教程后，可以接着让宿主按教程中的做法整理最小实现步骤：
-
-```text
-follow_up_research_task({
-  task_id: "<上次研究的 task.id>",
-  question: "按这些教程中的做法，整理最小实现步骤，并标明每一步的来源依据。",
-  mode: "language"
+resume_long_video_research({
+  session_id: "<原结果中的 session.id>",
+  timeout_seconds: 1800,
+  window_timeout_seconds: 300
 })
+
+get_research_session({ session_id: "<session.id>" })
+list_research_sessions({})
+delete_research_session({ session_id: "<session.id>" })
 ```
 
-追问创建子任务，沿用相同的 1–3 个来源，保存原始字幕、ASR、正文和 OCR 快照，并使用独立预算；父研究保持不变。默认语言追问只回答已保留范围，不请求来源、不重复下载、转写或 OCR，也不自动补齐父研究缺口。旧生成答案和视觉观察被排除；明确选择 `vision` 或 `multimodal` 才为新问题重新检查画面。
+已完成的概览和精读保留报告、字幕／ASR 与引用。续跑只处理未完成段，然后重新生成该来源的回答和覆盖报告；成功段不重复下载、转写或分析。本次运行期限和获取文件预算重新计算，`session.reused_segments` 与 `session.processed_segments` 区分保留工作与本次处理。
 
-后续用子任务的 `task.id` 继续或查看，`answer` 和 `answer_current` 表达新回答及其是否已包含最新证据。删除父任务或关联 session 后，子任务仍可使用。CLI 为 `npm run task -- follow-up PARENT_TASK_UUID /absolute/path/input.json`，输入采用 camelCase 的新 `question` 及可选设置。详见[同一批来源的连续追问、证据范围与预算](./docs/task-followup.md)。
+查看和列出不请求来源或 Provider。记录位于 `~/.catalyst/sessions`，可用 `CATALYST_SESSION_DIR` 覆盖；保存脱敏结果和进度，不保存媒体、凭据或签名获取地址。`save_session: false` 可关闭保存。续跑固定原问题、来源／分 P、模式、语言、画质与窗口计划；可选的新 `url` 仍须指向同一来源。详见[记录存储与恢复](./docs/research-sessions.md)。
+
+## 由宿主管理对话
+
+例如用户给教程 A、B，问两种 Agent 设计有何区别。宿主分别读取链接，在自己的上下文中保留证据并比较；后来用户再给教程 C，宿主只读取 C，再结合已保留的 A、B 回答。Catalyst 无需为此另建多来源任务或“追加资料”操作。
+
+用户接着问“按教程 A 整理最小实现步骤”时，宿主可以直接使用已有字幕、ASR、正文或 OCR。已保存视频的证据不在上下文中时，可通过 `get_research_session` 取回，无需重新读取来源；图文结果由宿主保留。缺少资料时，再选定时间窗口或图片页读取。旧生成答案和画面解释不等于原始文字；新问题需要检查画面时，应实际读取相关图片或片段。
+
+默认服务暴露 11 个工具：
+
+| 用途 | 工具 |
+| --- | --- |
+| 发现候选 | `discover_bilibili_videos` |
+| 读取单个来源 | `analyze_long_video_url`、`analyze_video_url`、`analyze_xiaohongshu_note` |
+| 恢复已保存的视频进度 | `resume_long_video_research`、`get_research_session`、`list_research_sessions`、`delete_research_session` |
+| 原有 BVR 工具 | `analyze_bilibili_video`、`analyze_video`、`inspect_video_window` |
 
 ## 发现 B 站候选
 
@@ -129,71 +146,14 @@ discover_bilibili_videos({
 
 当前是实验性的 B 站匿名 Web 搜索路径，不是稳定官方开放 API。访问限制可能使结果为部分或不可用；阻断、认证要求和限流会停止后续查询。所有结果固定声明 `search_exhaustive: false`，因返回上限省略的候选数量单独报告。详见[发现设计、联网参考与验收要求](./docs/discovery.md)。
 
-## 对照已读材料
+## 检查选定视频窗口
 
-宿主选定 2–3 份已读结果后，可以比较其中的共同说法、分歧及证据缺口。视频、小红书图文和已保存长视频记录可以混合使用：
-
-```text
-compare_research_materials({
-  question: "这些材料对高效注意力的适用条件有哪些共同说法和分歧？",
-  materials: [
-    { kind: "video", result: <已有视频研究的完整结果> },
-    { kind: "xiaohongshu", result: <已有小红书研究的完整结果> }
-  ],
-  language: "zh",
-  max_comparisons: 6,
-  timeout_seconds: 120
-})
-```
-
-每条对照保留材料身份、原证据 ID 和视频时间／图片页码。程序生成连续原文摘录，模型选择摘录编号，再由程序回填引用，避免模型重写或拼接引文；引用仍须与原证据逐字匹配。未涉及和证据不足单独表示；重复来源不能增加独立佐证数量，结果固定声明来源独立性尚未建立。
-
-对照只读已有结果，最多调用一次文本 Provider，不重新获取媒体。原始字幕、ASR、正文和 OCR 可按新问题重新分析；旧视觉观察仅在原问题与本轮问题相同时复用，旧最终答案不进入提示。输入限 2 MiB，模型提示限 200,000 字符，超限明确报错。引用通过只证明结构有效，所有对照仍为 `unverified`。输入类型、会话引用与联网设计取舍详见[多来源证据对照](./docs/comparison.md)。
-
-## 规划有界补读
-
-宿主可检查 1–3 份已有结果或保存记录的读取缺口，取得现有工具的有类型调用建议：
-
-```text
-plan_research_followup({
-  question: "这节课怎样解释自注意力的计算过程？",
-  materials: [
-    { kind: "video", result: <已有视频研究的完整结果> }
-  ],
-  evidence_requirement: "original",
-  coverage_target: "requested",
-  max_actions: 3,
-  max_rounds: 2,
-  round: 1,
-  attempted_action_keys: []
-})
-```
-
-规划返回缺口、动作 key、源时间窗口或原始图片页码，以及通过校验的工具参数。本次不调用模型、不访问平台、不取得媒体，也不执行或保存动作。宿主执行选中的 `next_actions`，保留新证据，再携带已尝试 key 和更新后的轮次重新规划。默认每轮最多 3 个动作、涉及 2 个来源，新视频窗口不超过 180 秒，图文单次不超过 4 页；保存记录续跑可能在期限和获取预算内处理多个原计划窗口。
-
-`original` 继承各材料原证据模式；`requested` 只检查原请求范围，明确设置 `coverage_target: "source"` 才扩展到已知完整视频或整篇笔记。换问题后旧视觉观察不算本轮视觉覆盖，原始文字仍可复用；重复材料的覆盖先合并。对照中的 `single_source` 或 `not_addressed` 不会自动触发补读，额外 B 站发现必须由宿主提供 `search_queries`。结构化来源访问限制和已尝试动作 key 会停止重复建议；模型鉴权错误不能证明来源被封锁。详见[补读规划设计、预算与联网参考](./docs/research-followup-plan.md)。
-
-## 执行一轮选定补读
-
-底层 v1 参考宿主保存固定补读计划，只通过现有 MCP 服务执行宿主明确选择的动作 key。上面的链接任务使用 v2；CLI 的 `show`、`list`、`delete` 可管理两种记录：
-
-```bash
-npm run build
-npm run task -- create /absolute/path/task-input.json
-npm run task -- run TASK_UUID SELECTED_ACTION_KEY
-npm run task -- run TASK_UUID
-```
-
-输入包含 `plan`（TypeScript 规划请求，使用 camelCase 参数及 2–3 份已有材料），可选 `totalTimeoutSeconds`。首次执行固定所选 key，后续继续同一组动作并跳过已记录结果。调用前先保存意图和期限额度；中断或丢失确认的调用转为 `unknown`，交宿主核查，不会自动重放。研究结果的 `partial` 和 `unavailable` 状态继续保留。
-
-任务保存在 `~/.catalyst/tasks` 或 `CATALYST_TASK_DIR`，与视频 session 分开。默认执行额度为 900 秒，每个动作按完整声明期限预留，不退款；这不是费用或下载预算。使用 `show`、`list` 和 `delete` 管理记录。其他宿主也可用自己的 MCP 连接嵌入执行器；来源选择、后续规划与对照继续由宿主负责。详见[任务输入、恢复边界与联网设计](./docs/research-tasks.md)。
-
-## 研究视频
+宿主需要核查具体画面时，可以选择原视频中的时间区间：
 
 ```text
 analyze_video_url({
   url: "https://www.youtube.com/watch?v=jNQXAC9IVRw",
-  question: "画面里有哪些动物，能直接看见哪些外形特征？",
+  question: "哪些动物实际出现在画面中，能看到哪些特征？",
   mode: "vision",
   media_detail: "default",
   include_comments: false,
@@ -203,68 +163,9 @@ analyze_video_url({
 })
 ```
 
-| 模式 | 使用的证据 |
-| --- | --- |
-| `language` | 优先平台字幕，无字幕时使用音频或 ASR；排除视频画面。 |
-| `vision` | 上传前移除音轨；画面中可见的文字仍可作为视觉证据。 |
-| `multimodal` | 同时使用原视频的声音与画面。 |
+这是明确选定的窗口，不是粘贴链接后的默认读取范围。`start_seconds` 与 `end_seconds` 必须成对提供。通用工具对超过 900 秒的媒体要求选择至多 900 秒的窗口，否则返回 `WINDOW_REQUIRED`；纯字幕语言读取有独立的文本限制。本地文件可用 `inspect_video_window`，传入绝对 `video_path` 和源时间范围；`analyze_video` 提供本地视频视觉分析。
 
-`start_seconds` 与 `end_seconds` 必须成对提供。对超过 900 秒的媒体，通用工具要求显式指定不超过 900 秒的区间，否则返回 `WINDOW_REQUIRED`；仅使用字幕的语言研究不受这个媒体上传限制。旧 BVR 入口继续保留长视觉视频的粗扫与精扫。`language` 参数可指定优先字幕或转写语言。每个平台分别报告素材能力和获取状态，评论不可用不会自动使视频研究失败。
-
-长课程、访谈和讲座可使用 `analyze_long_video_url`。它完整规划所选范围的概览窗口，再精读相关片段，分别返回概览、精读和未完成范围：
-
-```text
-analyze_long_video_url({
-  url: "https://www.bilibili.com/video/BV1DTxXzUEvW/?p=17",
-  question: "这一节课介绍了哪些自注意力机制，各自解决什么问题？",
-  mode: "multimodal",
-  language: "zh",
-  segment_seconds: 600,
-  max_segments: 12,
-  max_detail_windows: 2,
-  timeout_seconds: 1800
-})
-```
-
-概览采用最高 360p、1 fps 的有界媒体；精读采用最高 720p、5 fps。完整概览不等于每帧或每个公式均已读清。默认累计获取文件预算为 512 MiB，单份准备后的媒体最多 32 MiB；默认期限 900 秒，可调至 1,800 秒，宿主超时应更长。预算或期限不足会保留部分结果。媒体按区间获取，详见[长视频设计与验收](./docs/long-video.md)。
-
-### 保存与续跑长视频研究
-
-长视频研究默认在本地保存进度（`save_session: true`），返回的 `session.id` 标识这份记录。超时、取消或服务重启后，可以继续原问题：
-
-```text
-resume_long_video_research({
-  session_id: "<原结果中的 session.id>",
-  timeout_seconds: 1800,
-  window_timeout_seconds: 300
-})
-```
-
-续跑保留已完成概览和精读的报告、字幕／转写及引用，只处理未完成段，再更新综合回答和覆盖范围。已完成段不重复下载、转写或分析。每次调用重新计算期限和获取文件预算；`session.reused_segments` 与 `session.processed_segments` 分别记录复用段数和本次处理段数。
-
-`list_research_sessions` 列出记录，`get_research_session({ session_id })` 读取结果，`delete_research_session({ session_id })` 删除记录。默认目录为 `~/.catalyst/sessions`，可用 `CATALYST_SESSION_DIR` 指定其他目录。只保存脱敏后的结果和进度，不保存媒体文件、凭据或签名获取地址。首次调用可设置 `save_session: false`，不创建持久记录。
-
-续跑固定原问题、来源与分 P、模式、语言、画质和窗口计划，只允许调整运行期限与获取文件预算。访问需要时可用可选 `url` 补传原始分享链接；解析后的来源必须一致，访问参数不落盘。任务不会在返回后自动后台续跑。详见[研究记录与断点续跑](./docs/research-sessions.md)。
-
-### 对同一视频继续追问
-
-以已保存的记录为起点，使用已完成概览段的字幕／转写提出新问题：
-
-```text
-follow_up_long_video_research({
-  session_id: "<原结果中的 session.id>",
-  question: "课程中介绍的两种注意力机制有什么区别？",
-  mode: "language"
-})
-```
-
-追问创建独立记录，保留父研究。它复用原始语言文本，重新判断相关性、生成报告并回答新问题。语言追问不下载媒体、不调用 ASR，仍需调用文本模型；没有可用文本的窗口明确保留为缺失。
-
-公式或图表问题可用 `mode: "multimodal"`，先从语言分析选择新的精读窗口，再检查实际音画。概览仍是语言覆盖，精读会产生新的获取、ASR 和媒体分析调用。语言模式的 `max_detail_windows` 必须为 `0`，默认 `0`；多模态为 `1–4`，默认 `2`。来源范围、概览划分、语言和画质继承父记录，配置与来源身份须兼容。
-
-追问返回新的 `session.id`，可独立读取、续跑和删除。`follow_up` 记录父版本与复制的语言证据；首次追问所有问题相关报告重做，因此 `session.reused_segments` 为 `0`。详见[连续追问设计与验收](./docs/long-video-followup.md)。
-
-通用视频工具默认采用实际可用源，并记录真实质量。视觉和多模态获取优先选择不超过 1080p 的格式；发生源格式回退时，应查看实际返回的尺寸。媒体文件预算默认为 256 MiB，可通过 `CATALYST_MAX_MEDIA_MB` 调整。通用获取流程可能先下载完整源文件，再裁剪所选区间。独立研究调用之间没有共享媒体或转写缓存；已保存的长视频记录支持上述显式续跑与追问复用。需要质量门槛时显式指定，例如：
+通用视频工具默认采用实际可用源并记录质量，视觉和多模态获取优先选择不超过 1080p 的格式。媒体文件预算默认为 256 MiB，可通过 `CATALYST_MAX_MEDIA_MB` 调整；获取流程可能先下载完整源文件，再裁剪所选区间。独立调用之间没有共享媒体或转写缓存。需要质量门槛时显式指定：
 
 ```text
 source_quality: { profile: "high", on_unavailable: "error" }
@@ -272,7 +173,7 @@ source_quality: { profile: "high", on_unavailable: "error" }
 
 沿用的档位包括 `standard`（1080p30）、`high`（1440p30），以及显式给出 resolution 和 fps 的 `custom`。默认拒绝不满足目标的源；`on_unavailable: "warn"` 允许明确记录的降级。提高目标档位不能补出原视频中不存在的细节。
 
-小红书的 `url` 可直接粘贴笔记链接、官方 `xhslink.com`/`xhslink.cn` 短链，或包含单条链接的完整分享文案。请保留原始分享参数。HTTP 短链在访问前升级为 HTTPS，公开结果隐藏分享参数和签名媒体地址。合集、直播及无法确认时长的视频暂不支持。视频入口的空格式错误不代表已识别为图文；日常小红书研究优先使用下面的笔记入口。
+小红书的 `url` 可粘贴笔记链接、官方 `xhslink.com`/`xhslink.cn` 短链，或包含单条链接的完整分享文案。请保留原始分享参数。HTTP 短链在访问前升级为 HTTPS，公开结果隐藏分享参数和签名媒体地址。合集、直播及无法确认时长的视频暂不支持；视频入口的空格式错误不代表已识别为图文，日常小红书读取优先使用下面的笔记入口。
 
 ## 研究小红书图文
 
@@ -314,6 +215,18 @@ macOS 优先通过可用的 Swift/Vision 执行本地 OCR；其他环境或缺�
 旧 B 站工具保留默认严格要求 1080p30 的画质语义；通用工具默认使用实际可用源。已有 `STEPFUN_*`、`GEMINI_*`、`BILIBILI_*` 配置继续兼容。
 
 认证按平台显式配置。仅为指定平台设置已授权的 Cookie 文件或浏览器来源，各 Adapter 不复用其他平台的凭据。小红书仅使用显式设置的 `XIAOHONGSHU_COOKIES_FILE` 或 `XIAOHONGSHU_COOKIES_FROM_BROWSER`。公开元数据、选定字幕或媒体，以及可选社区内容，可能发送到配置的模型 Provider。
+
+## 旧研究流程兼容
+
+任务管理、材料对照、补读规划和新问题追问保留在单独的兼容服务中，不出现在默认 `dist/index.js` 的工具列表。已有集成需要这些工具时，可显式改用以下 MCP 入口：
+
+```bash
+node /absolute/path/to/Catalyst/dist/legacy-research.js
+```
+
+兼容入口提供默认的 11 个来源工具和旧有 9 个流程工具。任务 CLI（`npm run task -- …`）自动连接该入口。已有任务和 session 记录无需迁移，也不会被删除；本地 `show`、`list`、`delete` 命令继续可用。新的宿主接入应由 harness 管理对话状态、来源选择、多来源比较和新问题回答。
+
+旧契约详见[链接任务](./docs/link-research.md)、[任务追问](./docs/task-followup.md)、[材料对照](./docs/comparison.md)、[补读规划](./docs/research-followup-plan.md)、[选定轮次任务](./docs/research-tasks.md)及[长视频追问](./docs/long-video-followup.md)。
 
 ## 开发
 
