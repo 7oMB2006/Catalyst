@@ -1,5 +1,7 @@
 # 同一视频的连续追问
 
+> 兼容路径：本页的任务、规划、对照或追问工具仅由 `node dist/legacy-research.js` 暴露；默认 `node dist/index.js` 不注册这些工具。`npm run task -- ...` 自动使用兼容入口，已有记录无需迁移。新接入由 harness 管理上下文、来源选择、比较和追问，Catalyst 提供逐来源读取及读取进度恢复。见[默认使用方式](../README.zh-CN.md)。
+
 `follow_up_long_video_research` 从一份已保存的长视频研究提出新问题，复用已完成概览段的原始字幕或转写，再按新问题分析。每次追问创建独立记录，保留父记录及其问题、报告和版本。
 
 ## 使用方式

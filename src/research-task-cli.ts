@@ -91,7 +91,7 @@ async function withHost<T>(operation: (host: ResearchTaskHost, signal: AbortSign
   process.once("SIGINT", cancel); process.once("SIGTERM", cancel);
   const transport = new StdioClientTransport({
     command: process.execPath,
-    args: [fileURLToPath(new URL("./index.js", import.meta.url))],
+    args: [fileURLToPath(new URL("./legacy-research.js", import.meta.url))],
     stderr: "pipe",
     env: Object.fromEntries(Object.entries(process.env).filter((entry): entry is [string, string] => entry[1] !== undefined)),
   });
@@ -108,7 +108,7 @@ async function withHost<T>(operation: (host: ResearchTaskHost, signal: AbortSign
   }
 }
 
-/** Link workflows use MCP task tools; explicit selected-round commands retain v1 behavior. */
+/** Legacy workflows use the compatibility MCP entry point; local record management stays offline. */
 export async function researchTaskCli(args: string[]): Promise<unknown> {
   if (!args.length || args.length === 1 && ["--help", "-h"].includes(args[0])) return { commands };
   const [command, id, ...keys] = args;

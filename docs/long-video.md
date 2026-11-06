@@ -1,6 +1,6 @@
 # 长视频研究：设计与验收
 
-`analyze_long_video_url` 对单条视频或选定分 P 进行分段概览，再精读与问题相关的片段。普通 `analyze_video_url` 继续限制单次媒体区间为 900 秒；宿主可以根据视频长度选择长视频入口。长视频默认保存本地记录，可通过 `resume_long_video_research` 恢复同一问题，也可通过 `follow_up_long_video_research` 复用原始语言材料提出新问题。Discovery 属于后续工作。
+`analyze_long_video_url` 对单条视频或选定分 P 进行分段概览，再精读与问题相关的片段。普通 `analyze_video_url` 继续限制单次媒体区间为 900 秒；宿主可以根据视频长度选择长视频入口。长视频默认保存本地读取记录，可通过 `resume_long_video_research` 恢复同一问题的未完成读取。harness 管理后续问题、来源选择和综合回答；候选搜索使用独立的 `discover_bilibili_videos`。
 
 ## 用户场景
 
@@ -57,7 +57,7 @@
 
 续跑不允许修改问题、模式、来源与分 P、语言、画质或分段计划。允许为本次调用调整期限和累计文件预算；保存的报告不占本次下载预算。记录管理、存储上限、访问链接及恢复边界见[研究记录与断点续跑](./research-sessions.md)。
 
-新问题使用[连续追问入口](./long-video-followup.md)创建独立记录：复用已完成概览的字幕或转写，重新生成问题相关报告。多模态追问先做语言概览，再选取新的音画精读窗口，概览覆盖不代表视觉覆盖。缺少可用语言材料的窗口保留缺失，不套用旧问题报告，也不自动下载整片补齐。
+新问题由 harness 使用已返回的原始字幕／ASR 和来源定位回答；需要时通过 `get_research_session` 取回保存材料。新问题需要检查画面时，由 harness 选择明确时间窗，调用 `analyze_video_url` 的 `vision` 模式读取新证据。旧视觉解释不能自动作为新问题已检查画面的证明。[连续追问工具](./long-video-followup.md)仅在 `node dist/legacy-research.js` 兼容入口提供。
 
 ## 验收要求
 
