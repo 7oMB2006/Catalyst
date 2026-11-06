@@ -16,7 +16,7 @@ Catalyst evolves from [Bilibili Video Research](https://github.com/7oMB2006/Bili
 | Local files | Existing visual analysis and silent-window inspection tools. |
 | Douyin | Acquisition research candidate; no preview support claim. |
 
-Discovery starts with bounded Bilibili candidate search. A deterministic follow-up planner can suggest bounded reading or search actions from explicit evidence and coverage targets. The host agent owns query planning, candidate selection, action execution, and the overall conversation. Cross-platform search, automatic research loops, and long-running task scheduling are later work.
+Discovery starts with bounded Bilibili candidate search. For selected links, persistent research tasks connect initial reading, saved progress, explicit continuation and comparison. A deterministic follow-up planner also provides individual reading or search suggestions. The host agent owns query planning, source selection and the overall conversation. Cross-platform search, autonomous research loops and background scheduling are later work.
 
 ## Installation
 
@@ -66,6 +66,33 @@ npm start
 This starts the compiled stdio server. In an MCP host, use `node` as the command and the absolute path to `dist/index.js` as its argument. Set `DOTENV_CONFIG_PATH` to the absolute path to the local `.env` file when the host starts in a different directory. Configure the host's tool timeout to cover the requested research timeout and startup overhead.
 
 Provider credentials belong in the process environment or local `.env`, rather than the host's checked-in configuration. `CODEX_VIDEO_PROVIDER` remains the historical provider selector: `stepfun` by default, or `gemini`.
+
+## Start from links and continue later
+
+Give the host one to three Bilibili, YouTube or Xiaohongshu links and a question. It can start research without existing result JSON or manually selected time offsets:
+
+```text
+start_research_task({
+  urls: ["https://www.bilibili.com/video/BV1DTxXzUEvW/?p=17"],
+  question: "Which self-attention mechanisms does this lesson introduce?",
+  mode: "language"
+})
+```
+
+The result includes `task.id`, source progress and retained evidence. If work remains, the host maps a later request to continue to this ID:
+
+```text
+continue_research_task({ task_id: "<task.id>" })
+get_research_task({ task_id: "<task.id>" })
+list_research_tasks({})
+delete_research_task({ task_id: "<task.id>" })
+```
+
+A single source works on its own. Video research plans the full selected video or Bilibili part with bounded segments, rather than a default opening sample. Image notes retain original page numbers and separate text/visual coverage. Each invocation reads a source at most once, prioritizing unread links; starting runs up to three steps, and continuation accepts `max_steps: 1–4` (default three). When 2–3 materials are available, a step can compare their retained evidence. `comparison_current` states whether the saved comparison includes the latest reading results.
+
+The default persistent allowance is 1,800 seconds, with 240 seconds reserved per source call and up to 120 per comparison. Full declared timeouts are reserved without refunds; continuing does not reset the allowance. Completed work remains saved, while an unconfirmed call stops for inspection. There is no background continuation. `get`/`list` make no source or provider calls; deleting a task leaves its video sessions intact.
+
+The CLI provides `npm run task -- start /absolute/path/input.json` with camelCase `urls`, `question` and optional budgets, followed by `npm run task -- continue TASK_UUID`. See [link research, result scope, budgets and CLI inputs](./docs/link-research.md), including fresh share URLs and the limits of accumulated image-note reports.
 
 ## Discover Bilibili candidates
 
@@ -130,7 +157,7 @@ The planner returns gaps, action keys, source time windows or original image pag
 
 ## Execute one selected follow-up round
 
-The reference host saves an immutable follow-up plan and executes only explicitly selected action keys through the existing MCP server:
+The lower-level v1 reference host saves an immutable follow-up plan and executes only explicitly selected action keys through the existing MCP server. Link tasks above use v2; CLI `show`, `list` and `delete` manage both generations:
 
 ```bash
 npm run build

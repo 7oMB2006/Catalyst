@@ -19,8 +19,10 @@ import { comparisonInputSchema, comparisonResultShape } from "./comparison-schem
 import type { ComparisonInput } from "./comparison-contracts.js";
 import { planResearchFollowup } from "./followup-plan.js";
 import { followupPlanRequestSchema, followupPlanResultShape } from "./followup-plan-schema.js";
+import { registerLinkResearchTools } from "./link-research-tools.js";
 
 const server = new McpServer({ name: "catalyst-video-research-mcp", version: "0.1.0-preview.1" });
+registerLinkResearchTools(server);
 
 function result(text: string) {
   return { content: [{ type: "text" as const, text }] };

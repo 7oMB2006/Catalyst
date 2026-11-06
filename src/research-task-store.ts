@@ -17,16 +17,17 @@ export class ResearchTaskError extends Error {
 function checkId(id: string): void {
   if (!UUID.test(id)) throw new ResearchTaskError("INVALID_TASK_ID", "Supply a valid lowercase research task UUID.");
 }
-function parseRecord(input: unknown, id: string): ResearchTaskRecord {
-  try { return parseResearchTaskRecord(input, id); }
-  catch { throw new ResearchTaskError("TASK_CORRUPT", "The research task has an invalid or unsupported record format."); }
-}
+export interface TaskSnapshot { id: string; revision: number; created_at: string; updated_at: string }
 
 /** Private, bounded snapshots. Hold withLock across load, external work and each save. */
-export class ResearchTaskStore implements ResearchTaskStorage {
+export class SnapshotTaskStore<T extends TaskSnapshot> {
   readonly directory: string;
-  constructor(directory?: string) {
+  constructor(directory: string | undefined, private readonly parse: (input: unknown, id?: string) => T) {
     this.directory = resolve(directory ?? process.env.CATALYST_TASK_DIR ?? join(homedir(), ".catalyst", "tasks"));
+  }
+  private parseRecord(input: unknown, id: string): T {
+    try { return this.parse(input, id); }
+    catch { throw new ResearchTaskError("TASK_CORRUPT", "The research task has an invalid or unsupported record format."); }
   }
   newId(): string { return randomUUID(); }
   private async ensureDirectory(): Promise<void> {
@@ -60,9 +61,9 @@ export class ResearchTaskStore implements ResearchTaskStorage {
       return Buffer.concat(chunks).toString("utf8");
     } finally { await handle.close(); }
   }
-  async load(id: string): Promise<ResearchTaskRecord> {
+  async load(id: string): Promise<T> {
     checkId(id); await this.ensureDirectory();
-    try { return parseRecord(JSON.parse(await this.readLocal(join(this.directory, `${id}.json`), MAX_BYTES)), id); }
+    try { return this.parseRecord(JSON.parse(await this.readLocal(join(this.directory, `${id}.json`), MAX_BYTES)), id); }
     catch (error) {
       if (error instanceof ResearchTaskError) throw error;
       if (code(error) === "ENOENT") throw new ResearchTaskError("TASK_NOT_FOUND", "The research task was not found.");
@@ -118,12 +119,12 @@ export class ResearchTaskStore implements ResearchTaskStorage {
     checkId(id); return this.fileLock(`${id}.lock`, operation);
   }
   /** save does not reacquire the task lock; the caller holds it through the operation. */
-  async save(record: ResearchTaskRecord, expectedRevision: number | null): Promise<void> {
+  async save(record: T, expectedRevision: number | null): Promise<void> {
     checkId(record.id);
     let sanitized: unknown;
     try { sanitized = sanitizeResearchSnapshot(record); }
     catch { throw new ResearchTaskError("TASK_CORRUPT", "The research task is not a serializable snapshot."); }
-    const parsed = parseRecord(sanitized, record.id);
+    const parsed = this.parseRecord(sanitized, record.id);
     if (expectedRevision !== null && (!Number.isSafeInteger(expectedRevision) || expectedRevision < 1)) throw new ResearchTaskError("TASK_CONFLICT", "Supply the previous positive task revision.");
     if (parsed.revision !== (expectedRevision ?? 0) + 1) throw new ResearchTaskError("TASK_CONFLICT", "A saved task revision must advance by exactly one.");
     let content: string;
@@ -132,7 +133,7 @@ export class ResearchTaskStore implements ResearchTaskStorage {
     if (Buffer.byteLength(content) > MAX_BYTES) throw new ResearchTaskError("TASK_TOO_LARGE", "The research task exceeds the 8 MiB local record limit.");
     await this.ensureDirectory();
     const save = async () => {
-      let previous: ResearchTaskRecord | undefined;
+      let previous: T | undefined;
       try { previous = await this.load(record.id); }
       catch (error) { if (!(error instanceof ResearchTaskError) || error.code !== "TASK_NOT_FOUND") throw error; }
       if ((expectedRevision === null && previous) || (expectedRevision !== null && previous?.revision !== expectedRevision)) throw new ResearchTaskError("TASK_CONFLICT", "The research task changed. Reload it before saving.");
@@ -155,9 +156,9 @@ export class ResearchTaskStore implements ResearchTaskStorage {
       throw new ResearchTaskError("TASK_IO_ERROR", "The research task could not be saved atomically.");
     }
   }
-  async list(): Promise<ResearchTaskRecord[]> {
+  async list(): Promise<T[]> {
     await this.ensureDirectory();
-    const output: ResearchTaskRecord[] = [];
+    const output: T[] = [];
     const names = (await fs.readdir(this.directory)).filter(taskName).sort().slice(0, MAX_TASKS);
     for (const name of names) {
       try { output.push(await this.load(name.slice(0, -5))); }
@@ -184,4 +185,9 @@ export class ResearchTaskStore implements ResearchTaskStorage {
       }
     });
   }
+}
+
+/** The original immutable follow-up task format remains unchanged. */
+export class ResearchTaskStore extends SnapshotTaskStore<ResearchTaskRecord> implements ResearchTaskStorage {
+  constructor(directory?: string) { super(directory, parseResearchTaskRecord); }
 }

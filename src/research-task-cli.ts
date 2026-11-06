@@ -6,12 +6,15 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import type { CreateResearchTaskRequest, ResearchTaskHost } from "./research-task-contracts.js";
-import { ResearchTaskStore } from "./research-task-store.js";
+import { AnyResearchTaskStore } from "./link-research-store.js";
+import { continueLinkResearchRequestSchema, linkResearchRequestSchema } from "./link-research-schema.js";
+import type { LinkResearchRequest } from "./link-research-contracts.js";
 import { createResearchTask, runResearchTask } from "./research-tasks.js";
 import { redactSensitiveText } from "./video-analysis.js";
 
 const MAX_INPUT_BYTES = 2 * 1024 * 1024;
 const commands = [
+  "start <input.json> (links and question)", "continue <task-id> [input.json]",
   "create <input.json>", "show <task-id>", "list", "delete <task-id>",
   "run <task-id> <action-key>... (resume the same selection by omitting keys)",
 ];
@@ -21,9 +24,12 @@ const fail = (code: string, message: string): never => { throw Object.assign(new
 export function createMcpResearchTaskHost(client: Pick<Client, "callTool">): ResearchTaskHost {
   return {
     async callTool(name, args, signal) {
-      const requested = name === "plan_research_followup" ? args.planning_timeout_seconds ?? 10 : args.timeout_seconds ?? 240;
+      const requested = name === "plan_research_followup" ? args.planning_timeout_seconds ?? 10
+        : name === "start_research_task" ? args.total_timeout_seconds ?? 1800
+        : name === "continue_research_task" ? 3600 : args.timeout_seconds ?? 240;
       const seconds = typeof requested === "number" && Number.isFinite(requested) && requested > 0 ? requested : 240;
-      const response = await client.callTool({ name, arguments: args }, undefined, { timeout: seconds * 1000 + 15_000, signal }).catch(() => {
+      const cleanup = name === "start_research_task" ? 30_000 : 0;
+      const response = await client.callTool({ name, arguments: args }, undefined, { timeout: seconds * 1000 + cleanup + 15_000, signal }).catch(() => {
         if (signal?.aborted) throw signal.reason ?? new DOMException("The operation was cancelled.", "AbortError");
         return fail("TASK_TOOL_CALL_FAILED", "The MCP tool call failed before a structured response was confirmed. Inspect the task before attempting more work.");
       });
@@ -35,7 +41,7 @@ export function createMcpResearchTaskHost(client: Pick<Client, "callTool">): Res
   };
 }
 
-async function readInput(path: string): Promise<CreateResearchTaskRequest> {
+async function readInput(path: string): Promise<Record<string, unknown>> {
   let handle: Awaited<ReturnType<typeof fs.open>> | undefined;
   let content = "";
   try {
@@ -61,10 +67,17 @@ async function readInput(path: string): Promise<CreateResearchTaskRequest> {
   let value: unknown;
   try { value = JSON.parse(content); }
   catch { fail("TASK_INPUT_INVALID", "The task input must contain valid JSON."); }
-  if (!value || typeof value !== "object" || Array.isArray(value) || !("plan" in value) || !value.plan || typeof value.plan !== "object" || Array.isArray(value.plan)) {
-    fail("TASK_INPUT_INVALID", "Supply an object containing plan with the planner request and optional totalTimeoutSeconds.");
-  }
-  return value as CreateResearchTaskRequest;
+  if (!value || typeof value !== "object" || Array.isArray(value)) fail("TASK_INPUT_INVALID", "Supply a task request JSON object.");
+  return value as Record<string, unknown>;
+}
+
+export function linkRequestToToolArguments(input: LinkResearchRequest): Record<string, unknown> {
+  return {
+    urls: input.urls, question: input.question, mode: input.mode, language: input.language,
+    total_timeout_seconds: input.totalTimeoutSeconds, action_timeout_seconds: input.actionTimeoutSeconds,
+    max_actions: input.maxActions, segment_seconds: input.segmentSeconds, max_segments: input.maxSegments,
+    max_detail_windows: input.maxDetailWindows,
+  };
 }
 
 async function withHost<T>(operation: (host: ResearchTaskHost, signal: AbortSignal) => Promise<T>): Promise<T> {
@@ -90,16 +103,33 @@ async function withHost<T>(operation: (host: ResearchTaskHost, signal: AbortSign
   }
 }
 
-/** A reference host for one selected round; the MCP server remains an ordinary tool server. */
+/** Link workflows use MCP task tools; explicit selected-round commands retain v1 behavior. */
 export async function researchTaskCli(args: string[]): Promise<unknown> {
   if (!args.length || args.length === 1 && ["--help", "-h"].includes(args[0])) return { commands };
   const [command, id, ...keys] = args;
+  if (command === "start" && args.length === 2) {
+    const parsed = linkResearchRequestSchema.safeParse(await readInput(id));
+    const input = parsed.success ? parsed.data : fail("TASK_INPUT_INVALID", "Supply one to three supported source links, a question, and valid optional task budgets.");
+    return withHost((host, signal) => host.callTool("start_research_task", linkRequestToToolArguments(input), signal));
+  }
+  if (command === "continue" && (args.length === 2 || args.length === 3)) {
+    const parsed = continueLinkResearchRequestSchema.safeParse(args.length === 3 ? await readInput(keys[0]) : {});
+    const input = parsed.success ? parsed.data : fail("TASK_INPUT_INVALID", "Continuation input accepts maxSteps and optional fresh sourceUrls only; task budgets and question remain fixed.");
+    // Validate the ID and record locally before starting a subprocess.
+    const task = await new AnyResearchTaskStore().load(id);
+    if (task.schema_version !== "2") fail("TASK_INPUT_INVALID", "Use run for a selected-round task; continue accepts a link research task.");
+    return withHost((host, signal) => host.callTool("continue_research_task", {
+      task_id: id, max_steps: input.maxSteps,
+      source_urls: input.sourceUrls?.map(({ sourceId, url }) => ({ source_id: sourceId, url })),
+    }, signal));
+  }
   if (command === "create" && args.length === 2) {
     const input = await readInput(id);
-    return withHost((host, signal) => createResearchTask(input, { host, signal }));
+    if (!input.plan || typeof input.plan !== "object" || Array.isArray(input.plan)) fail("TASK_INPUT_INVALID", "Supply an object containing plan with the planner request and optional totalTimeoutSeconds.");
+    return withHost((host, signal) => createResearchTask(input as unknown as CreateResearchTaskRequest, { host, signal }));
   }
   if (command === "run" && args.length >= 2) return withHost((host, signal) => runResearchTask(id, keys.length ? keys : undefined, { host, signal }));
-  const store = new ResearchTaskStore();
+  const store = new AnyResearchTaskStore();
   if (command === "show" && args.length === 2) return store.load(id);
   if (command === "delete" && args.length === 2) { await store.delete(id); return { id, deleted: true }; }
   if (command === "list" && args.length === 1) return {
