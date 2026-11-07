@@ -55,6 +55,7 @@ flowchart TD
 | `src/long-video.ts`、`src/long-video-continuation.ts` | 单视频分段概览与精读、检查点、覆盖和续跑兼容校验。 |
 | `src/research-sessions.ts`、`src/research-session-store.ts` | 长视频持久快照、Provider 兼容性、原子保存、版本与锁、恢复和显式删除；原有的新问题追问分支由兼容层调用。 |
 | `src/note-research.ts`、`src/note-contracts.ts`、`src/note-result-schema.ts` | 小红书正文、逐页 OCR／视觉证据及确认后的视频路由。 |
+| `src/note-visual-output.ts` | 图文视觉批次的原生输出 schema、严格观察数组校验；校验后由程序按输入位置绑定原页。 |
 | `src/discovery.ts`、`src/bilibili-search.ts`、`src/discovery-contracts.ts`、`src/discovery-schema.ts` | 有界候选查询、身份去重、排名依据、访问状态与独立候选契约。 |
 | `src/video-analysis.ts`、`src/media-quality.ts` | 静音、音轨和片段准备，StepFun／Gemini 调用与质量选择。 |
 | `src/process.ts` | 有期限和输出上限的子进程，取消时清理进程组或进程树。 |

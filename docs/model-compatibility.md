@@ -76,6 +76,41 @@ STEPFUN_ASR_MODEL=stepaudio-3-asr-max
 
 Do not mix credentials or Base URLs between the two channels.
 
+### 2026-11-07 — Image-note native structured output
+
+| Field | Result |
+| --- | --- |
+| Capability | Default image-note `vision` / `combined` visual batches |
+| Live channel / model | Step Plan / `step-3.7-flash` |
+| Request path | Chat Completions with image inputs and strict `json_schema` |
+| Result | `interface-compatible` on the tested channel |
+| Probe | Without `response_format`, the model returned requested plain text; `json_object` returned HTTP 200 with a valid object; strict `json_schema` returned HTTP 200 with `{"observations":["visible"]}` despite a prompt requesting plain text |
+| MCP check | Three reads of original page 24, plus one read of pages 24–28 in 4+1 batches; native output shape, original-page mapping and citation structure passed in all four calls |
+
+These checks establish current interface compatibility for this configured
+channel, not support across all StepFun models or channels, or observation
+accuracy. Model defaults remain unchanged. Gemini has SDK and mock coverage for
+the request fields below; its live endpoint has not been validated.
+
+The default note visual stage passes `responseJsonSchema` to
+`analyzeImagesWithProvider`. StepFun sends
+`response_format: { type: "json_schema", json_schema: { name: "image_response", strict: true, schema: ... } }`;
+Gemini sets `responseMimeType: "application/json"` and `responseJsonSchema`.
+The internal response is exactly `{"observations":["..."]}`: one nonempty string
+per supplied image, with the array length fixed to the batch size (1–4).
+The application validates the whole batch, then assigns original source pages
+by input position; model-generated page numbers are not part of this contract.
+
+Invalid JSON or a schema mismatch rejects that visual batch without guessing
+missing observations. Completed batches and OCR remain available. If an API
+rejects these request fields, Catalyst does not strip the constraint and resend
+that batch; later distinct batches may still run within the request budget.
+Only an explicit `overrides.analyzeImages` integration retains compatibility
+with the legacy `pages` response shape; the default provider path rejects it.
+
+This adds no MCP tools or parameters. Text, video, ASR, OCR and ordinary image
+provider calls do not request this schema by default.
+
 ## Pending candidates
 
 | Candidate | Planned check |
