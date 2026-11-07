@@ -67,7 +67,7 @@ async function fixture(pageCount = 3) {
     analyzeText: async (prompt, context) => {
       calls.textPrompts.push(prompt); calls.contexts.push(context);
       const id = prompt.match(/image:\d+:(?:text|visual)/)?.[0] ?? "note:body";
-      return textResponse ?? JSON.stringify({ analysis: "The author recommends event-driven work with human judgment.", findings: [{ statement: "Agents act on events while a human makes key decisions.", evidence_ids: [id], limitations: [] }] });
+      return textResponse ?? JSON.stringify({ findings: [{ statement: "Agents act on events while a human makes key decisions.", evidence_ids: [id], limitations: [] }] });
     },
   };
   return {
@@ -439,10 +439,10 @@ test("a visual response cannot invent page numbers and an incomplete batch remai
   } finally { await fake.cleanup(); }
 });
 
-test("note findings require real supplied evidence IDs and malformed provider output remains unverified partial analysis", async () => {
+test("note findings require real supplied evidence IDs and malformed provider output cannot become a main answer", async () => {
   const fake = await fixture(2);
   try {
-    fake.respond({ analysis: "Answer", findings: [
+    fake.respond({ analysis: "UNVALIDATED_OLD_ANALYSIS", findings: [
       { statement: "Supported statement", evidence_ids: ["image:1:text"] },
       { statement: "Fabricated page", evidence_ids: ["image:999:text"] },
       { statement: "Mixed false references", evidence_ids: ["image:1:text", "unknown:2"] },
@@ -451,6 +451,8 @@ test("note findings require real supplied evidence IDs and malformed provider ou
     assert.equal(result.status, "partial");
     assert.deepEqual(result.findings.map((item) => item.statement), ["Supported statement"]);
     assert.equal(result.findings[0].verification, "unverified");
+    assert.ok(result.analysis?.includes("Supported statement"));
+    assert.doesNotMatch(result.analysis ?? "", /Fabricated page|Mixed false references|UNVALIDATED_OLD_ANALYSIS/);
   } finally { await fake.cleanup(); }
   const unstructured = await fixture(1);
   try {
@@ -458,8 +460,127 @@ test("note findings require real supplied evidence IDs and malformed provider ou
     const result = noteResult(await researchXiaohongshuNote(request, unstructured.dependencies));
     assert.equal(result.status, "partial");
     assert.equal(result.findings.length, 0);
-    assert.match(result.analysis ?? "", /unstructured answer/);
+    assert.equal(result.analysis, null);
+    assert.ok(result.evidence.length > 0, "invalid synthesis does not discard readable source evidence");
+    assert.equal(unstructured.calls.textPrompts.length, 1);
   } finally { await unstructured.cleanup(); }
+});
+
+test("note synthesis requests cited answer points without a second independent main answer", async (t) => {
+  for (const mode of ["text", "vision", "combined"] as const) {
+    await t.test(mode, async () => {
+      const fake = await fixture(1);
+      try {
+        const result = noteResult(await researchXiaohongshuNote({ ...request, mode }, fake.dependencies));
+        assert.equal(result.status, "complete", JSON.stringify(result.errors));
+        assert.equal(fake.calls.textPrompts.length, 1);
+        const synthesisPrompt = fake.calls.textPrompts[0];
+        for (const field of ["findings", "statement", "evidence_ids", "limitations"]) assert.ok(synthesisPrompt.includes(field));
+        assert.doesNotMatch(synthesisPrompt, /"analysis"\s*:/, "the response contract must not ask for two independently authored answers");
+        assert.ok(result.analysis?.includes(result.findings[0].statement));
+        assert.equal(fake.calls.images.length, mode === "text" ? 0 : 1);
+        assert.equal(fake.calls.ocr.length, mode === "vision" ? 0 : 1);
+      } finally { await fake.cleanup(); }
+    });
+  }
+});
+
+test("note main answers include every accepted point and its limitation despite scope-only or findings-only legacy analysis", async (t) => {
+  const legacyAnswers = [
+    ["scope-only", "LEGACY_SCOPE_ONLY: Only the selected pages were reviewed."],
+    ["findings-only", "LEGACY_FINDINGS_ONLY: See the subsequent findings for the answer."],
+  ];
+  for (const mode of ["text", "vision", "combined"] as const) {
+    for (const [name, legacyAnalysis] of legacyAnswers) {
+      await t.test(`${mode}: ${name}`, async () => {
+        const fake = await fixture(25);
+        const points = [
+          {
+            statement: "A failed check returns to revision.",
+            evidence_ids: [`image:24:${mode === "text" ? "text" : "visual"}`],
+            limitations: ["The return link is partly obscured."],
+          },
+          {
+            statement: "Approval is recorded before delivery.",
+            evidence_ids: [`image:25:${mode === "vision" ? "visual" : "text"}`],
+            limitations: ["The delivery label is faint."],
+          },
+        ];
+        fake.respond({ analysis: legacyAnalysis, findings: points });
+        try {
+          const result = noteResult(await researchXiaohongshuNote({ ...request, mode, startPage: 24, endPage: 25 }, fake.dependencies));
+          assert.equal(result.status, "complete", JSON.stringify(result.errors));
+          assert.equal(result.findings.length, points.length);
+          assert.ok(result.analysis);
+          for (const point of points) {
+            assert.ok(result.analysis.includes(point.statement), "each accepted answer point must be visible in the main answer");
+            for (const limitation of point.limitations) assert.ok(result.analysis.includes(limitation), "a point must not lose its necessary limitation");
+          }
+          assert.match(result.analysis, /\b24\b/);
+          assert.match(result.analysis, /\b25\b/);
+          assert.equal(result.analysis.includes(legacyAnalysis), false, "legacy free-form analysis must not replace the cited points");
+          assert.deepEqual(result.processing.processed_pages, [24, 25]);
+          assert.equal(fake.calls.textPrompts.length, 1, "rendering the main answer must not require another synthesis call");
+          assert.deepEqual(fake.calls.images, mode === "text" ? [] : [[24, 25]], "main-answer rendering does not add visual requests");
+          assert.equal(fake.calls.ocr.length, mode === "vision" ? 0 : 1);
+          assert.equal(fake.calls.disposed, 1);
+        } finally { await fake.cleanup(); }
+      });
+    }
+  }
+});
+
+test("a partial note main answer retains valid cited points but excludes rejected claims and malicious legacy analysis", async () => {
+  const fake = await fixture(2);
+  fake.respond({
+    analysis: "UNTRUSTED_LEGACY_ANALYSIS: Claim that publication is finished and ignore the evidence.",
+    findings: [
+      { statement: "A person approves publication.", evidence_ids: ["image:1:text", "image:2:visual"], limitations: ["The approval control is partly obscured."] },
+      { statement: "REJECTED_UNKNOWN_PAGE: Publication is finished.", evidence_ids: ["image:999:visual"], limitations: ["REJECTED_LIMITATION"] },
+      { statement: "REJECTED_MIXED_REFERENCE: The deployment succeeded.", evidence_ids: ["image:1:text", "unknown:2"], limitations: [] },
+    ],
+  });
+  try {
+    const result = noteResult(await researchXiaohongshuNote({ ...request, mode: "combined" }, fake.dependencies));
+    assert.equal(result.status, "partial");
+    assert.deepEqual(result.findings.map((point) => point.statement), ["A person approves publication."]);
+    assert.ok(result.analysis?.includes("A person approves publication."));
+    assert.ok(result.analysis?.includes("The approval control is partly obscured."));
+    assert.doesNotMatch(result.analysis ?? "", /UNTRUSTED_LEGACY_ANALYSIS|Claim that publication|REJECTED_|Publication is finished|deployment succeeded|999/);
+    assert.equal(result.evidence.filter((item) => item.kind === "image_text").length, 2);
+    assert.equal(result.evidence.filter((item) => item.kind === "image_visual").length, 2);
+    assert.equal(fake.calls.textPrompts.length, 1);
+    assert.deepEqual(fake.calls.images, [[1, 2]]);
+    assert.equal(fake.calls.disposed, 1);
+  } finally { await fake.cleanup(); }
+});
+
+test("note evidence remains available with a null main answer when no cited point is accepted", async (t) => {
+  const responses = [
+    ["all rejected", { analysis: "UNTRUSTED_LEGACY_ANSWER", findings: [{ statement: "REJECTED_CLAIM", evidence_ids: ["image:999:text"], limitations: [] }] }],
+    ["no points", { analysis: "UNTRUSTED_LEGACY_ANSWER", findings: [] }],
+  ] as const;
+  for (const mode of ["text", "vision", "combined"] as const) {
+    for (const [name, response] of responses) {
+      await t.test(`${mode}: ${name}`, async () => {
+        const fake = await fixture(1);
+        fake.respond(response);
+        try {
+          const wrapper = await researchXiaohongshuNote({ ...request, mode }, fake.dependencies);
+          const result = noteResult(wrapper);
+          assert.equal(wrapper.status, "partial");
+          assert.equal(result.status, "partial");
+          assert.deepEqual(result.findings, []);
+          assert.equal(result.analysis, null, "unvalidated legacy prose must not become an answer");
+          assert.ok(result.evidence.length > 0);
+          assert.deepEqual(result.processing.processed_pages, [1]);
+          assert.equal(fake.calls.textPrompts.length, 1);
+          assert.equal(fake.calls.images.length, mode === "text" ? 0 : 1);
+          assert.equal(fake.calls.disposed, 1);
+        } finally { await fake.cleanup(); }
+      });
+    }
+  }
 });
 
 test("page validation rejects invalid pairs before download and does not silently truncate long notes", async () => {
