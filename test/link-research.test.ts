@@ -127,7 +127,9 @@ test("partial note continuation retains old pages and per-pass answers with coll
   assert.equal(evidence.size, aggregate.evidence.length); assert.equal(new Set(aggregate.findings.map(item => item.id)).size, aggregate.findings.length);
   assert.ok(aggregate.findings.length >= 2, "cited findings from both reading passes remain inspectable");
   for (const finding of aggregate.findings) assert.ok(finding.evidence_ids.every(id => evidence.has(id)));
-  assert.match(aggregate.analysis ?? "", /original page 1/); assert.match(aggregate.analysis ?? "", /original page 2/);
+  assert.ok(aggregate.analysis?.includes("The inspected material on page 1 delegates work."));
+  assert.ok(aggregate.analysis?.includes("The inspected material on page 2 delegates work."));
+  assert.ok(originalReceipt.analysis && aggregate.analysis?.includes(originalReceipt.analysis), "the original pass answer assembled from accepted findings survives continuation");
   assert.match([...aggregate.warnings, ...complete.limitations].join("\n"), /(?:pass|synthesi|分次|逐次|综合)/i, "per-pass reports must not silently claim a new whole-note synthesis");
   assert.equal(aggregate.request.startPage, undefined); assert.equal(aggregate.request.endPage, undefined);
   assert.equal(calls.filter(call => call.name === "analyze_xiaohongshu_note").length, 2);
