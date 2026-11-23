@@ -7,8 +7,15 @@ import { launchConfig, registerHost, requireEntry, type RunHost } from "./hosts.
 import { doctor } from "../doctor.js";
 
 const LIMIT = 64 * 1024;
-const TYPE = { "/": "text/html; charset=utf-8", "/app.js": "text/javascript; charset=utf-8", "/style.css": "text/css; charset=utf-8" } as const;
-const FILE = { "/": "index.html", "/app.js": "app.js", "/style.css": "style.css" } as const;
+const staticFiles = {
+  "index.html": "text/html; charset=utf-8",
+  "app.js": "text/javascript; charset=utf-8",
+  "style.css": "text/css; charset=utf-8",
+  "icons/gemini.png": "image/png",
+  "icons/stepfun.png": "image/png",
+  "icons/codex.png": "image/png",
+  "icons/claude-code.png": "image/png",
+};
 const guarded = new Set(["/api/config", "/api/doctor", "/api/hosts"]);
 
 function json(res: ServerResponse, status: number, value: unknown) {
@@ -47,9 +54,11 @@ export async function startSetup(options: SetupOptions) {
   const { envFile, node, entry, env, runHost, assets, diagnose = doctor } = options;
   const token = randomBytes(32).toString("hex");
   const launch = launchConfig(node, entry, envFile);
-  const files = new Map(await Promise.all(Object.entries(FILE).map(async ([route, name]) => {
-    const data = await readFile(new URL(name, assets), "utf8");
-    return [route, route === "/" ? data.replace("__SETUP_TOKEN__", token) : data] as const;
+  const files = new Map(await Promise.all(Object.entries(staticFiles).map(async ([name, type]) => {
+    const data = await readFile(new URL(name, assets));
+    const html = name === "index.html";
+    const body = html ? data.toString("utf8").replace("__SETUP_TOKEN__", token) : data;
+    return [html ? "/" : "/" + name, { type, body }] as const;
   })));
   let authority = "";
   let editing = false;
@@ -60,14 +69,14 @@ export async function startSetup(options: SetupOptions) {
     res.setHeader("Cache-Control", "no-store");
     res.setHeader("X-Content-Type-Options", "nosniff");
     res.setHeader("Referrer-Policy", "no-referrer");
-    res.setHeader("Content-Security-Policy", "default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; base-uri 'none'; frame-ancestors 'none'; form-action 'none'");
+    res.setHeader("Content-Security-Policy", "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self'; connect-src 'self'; base-uri 'none'; frame-ancestors 'none'; form-action 'none'");
     const origin = "http://" + authority;
     if (req.headers.host !== authority || (req.headers.origin !== undefined && req.headers.origin !== origin)
       || req.headers["sec-fetch-site"] === "cross-site") throw new SetupError(403, "Open the local setup URL printed in your terminal.");
     const url = req.url ?? "";
     const asset = files.get(url);
     if (req.method === "GET" && asset !== undefined) {
-      res.writeHead(200, { "Content-Type": TYPE[url as keyof typeof TYPE] }).end(asset);
+      res.writeHead(200, { "Content-Type": asset.type }).end(asset.body);
       return;
     }
     if (!guarded.has(url)) throw new SetupError(404, "Not found.");

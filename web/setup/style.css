@@ -63,12 +63,7 @@ fieldset { min-inline-size: 0; border: 0; margin: 0; padding: 0; }
 .provider-option:has(input:focus-visible) { outline: 2px solid var(--focus); outline-offset: 3px; }
 .provider-option strong { font-size: 16px; line-height: 26px; letter-spacing: -.035em; }
 .provider-note { grid-column: 1 / -1; margin-top: 8px; color: var(--muted); font-size: 12px; }
-.provider-glyph { width: 24px; height: 24px; }
-.gemini { font-size: 29px; display: grid; place-content: center; color: #766dc1; line-height: 1; }
-.stepfun {
-  margin-inline: 2px; width: 20px; height: 19px; background: #516fbe;
-  clip-path: polygon(0 66%, 31% 66%, 31% 33%, 63% 33%, 63% 0, 100% 0, 100% 37%, 69% 37%, 69% 69%, 37% 69%, 37% 100%, 0 100%);
-}
+.provider-icon { max-width: 100%; height: auto; }
 .provider-prompt { font-size: 13px; color: var(--muted); margin: 18px 0 2px; }
 .field-grid { margin-top: 19px; row-gap: 14px; }
 .field { display: block; font-size: 13px; font-weight: 600; }
@@ -108,9 +103,6 @@ button:disabled { opacity: .55; cursor: default; }
 .host-row { display: flex; align-items: center; gap: 10px; padding-block: 10px; }
 .host-row + .host-row { border-top: 1px solid #ecece5; }
 .host-row strong { font-size: 15px; letter-spacing: -.025em; }
-.host-icon { display: grid; place-items: center; width: 33px; height: 33px; border-radius: 8px; }
-.terminal { background: #2c302d; color: #faf9f4; font: 600 20px/1 var(--mono); letter-spacing: -.15em; padding-right: 3px; }
-.claude { background: #f7e9df; color: #a85333; font: 30px/1 "Arial", sans-serif; }
 .host-row button { margin-left: auto; min-width: 55px; min-height: 31px; padding: 4px 10px; font-size: 12px; }
 .other-hosts { margin-top: 5px; }
 .other-hosts[open] { padding-bottom: 10px; }
@@ -161,5 +153,5 @@ pre { margin: 10px 0; padding: 14px; border-radius: 7px; overflow: auto; backgro
 }
 @media (forced-colors: active) {
   .provider-option input { appearance: auto; }
-  .brand-mark::before, .stepfun { background: CanvasText; }
+  .brand-mark::before { background: CanvasText; }
 }

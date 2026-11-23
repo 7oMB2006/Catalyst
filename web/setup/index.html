@@ -36,13 +36,13 @@
               <legend class="visually-hidden">模型服务</legend>
               <label class="provider-option">
                 <input type="radio" name="CODEX_VIDEO_PROVIDER" value="gemini" required>
-                <span class="provider-glyph gemini" aria-hidden="true">✦</span>
+                <img class="provider-icon" src="./icons/gemini.png" width="24" height="24" alt="">
                 <strong>Gemini</strong>
                 <span class="provider-note">同一模型读取与转写</span>
               </label>
               <label class="provider-option">
                 <input type="radio" name="CODEX_VIDEO_PROVIDER" value="stepfun" required>
-                <span class="provider-glyph stepfun" aria-hidden="true"></span>
+                <img class="provider-icon" src="./icons/stepfun.png" width="24" height="24" alt="">
                 <strong>StepFun</strong>
                 <span class="provider-note">阶跃星辰 · 独立转写模型</span>
               </label>
@@ -84,11 +84,11 @@
             <p>将 Catalyst 添加到宿主的用户配置中。</p>
           </header>
           <div class="host-row">
-            <span class="host-icon terminal" aria-hidden="true">›_</span><strong>Codex</strong>
+            <img src="./icons/codex.png" width="33" height="33" alt=""><strong>Codex</strong>
             <button type="button" data-host="codex" aria-label="接入 Codex" disabled>接入</button>
           </div>
           <div class="host-row">
-            <span class="host-icon claude" aria-hidden="true">✳</span><strong>Claude Code</strong>
+            <img src="./icons/claude-code.png" width="33" height="33" alt=""><strong>Claude Code</strong>
             <button type="button" data-host="claude" aria-label="接入 Claude Code" disabled>接入</button>
           </div>
           <p class="status" id="host-status" role="status"></p>

@@ -26,7 +26,17 @@ test("local setup saves shared settings without revealing keys or overwriting ne
     }),
   });
   try {
-    const page = await (await fetch(url)).text();
+    const pageResponse = await fetch(url);
+    const page = await pageResponse.text();
+    assert.match(pageResponse.headers.get("content-security-policy") ?? "", /\bimg-src 'self';/);
+    for (const name of ["gemini", "stepfun", "codex", "claude-code"]) {
+      const icon = "icons/" + name + ".png";
+      assert.ok(page.includes('src="./' + icon + '"'));
+      const response = await fetch(url + "/" + icon);
+      assert.equal(response.status, 200);
+      assert.equal(response.headers.get("content-type"), "image/png");
+      assert.deepEqual(Buffer.from(await response.arrayBuffer()), await readFile(new URL("../web/setup/" + icon, import.meta.url)));
+    }
     const token = /content="([a-f0-9]{64})"/.exec(page)?.[1];
     assert.ok(token);
     assert.equal((await fetch(url + "/api/config")).status, 403);
