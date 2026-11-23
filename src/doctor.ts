@@ -1,4 +1,3 @@
-import "dotenv/config";
 import { execFile } from "node:child_process";
 import { createRequire } from "node:module";
 import path from "node:path";
@@ -124,6 +123,7 @@ export async function doctor(options: DoctorOptions = {}): Promise<DoctorReport>
 
 const invokedPath = process.argv[1];
 if (invokedPath && import.meta.url === pathToFileURL(path.resolve(invokedPath)).href) {
+  await import("dotenv/config");
   doctor().then((report) => {
     process.stdout.write(`${JSON.stringify(report, null, 2)}\n`);
     process.exitCode = report.ok ? 0 : 1;

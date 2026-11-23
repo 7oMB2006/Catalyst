@@ -77,6 +77,10 @@ Use [`.env.example`](./.env.example) as a template and enable one configuration 
 
 ## Start the MCP server
 
+For a local setup page, run `npm run setup` after building and open the printed loopback URL. The page saves model settings in the installation's `.env` (or the file specified by `DOTENV_CONFIG_PATH`), runs local dependency checks, and can register Catalyst in Codex or Claude Code at user scope when its CLI is on `PATH`. A different entry already named `catalyst` is left in place. For other hosts, copy the generated JSON and adapt it to the host's format. The registered entry includes paths only; the model credential stays in the local settings file. Reconnect Catalyst after saving settings.
+
+To start the stdio server directly:
+
 ```bash
 npm start
 ```
