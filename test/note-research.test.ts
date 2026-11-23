@@ -247,7 +247,7 @@ test("invalid ordered visual output rejects the entire batch before retaining ev
   }
 });
 
-test("a rejected later ordered batch retains earlier visual evidence and any existing OCR", async (t) => {
+test("core: Xiaohongshu keeps an answer with original pages after a later visual batch fails", async (t) => {
   for (const mode of ["vision", "combined"] as const) {
     await t.test(mode, async () => {
       const fake = await fixture(32);
@@ -266,6 +266,10 @@ test("a rejected later ordered batch retains earlier visual evidence and any exi
         assert.match(fake.calls.textPrompts[0], /Accepted visual detail from page 27/);
         assert.doesNotMatch(fake.calls.textPrompts[0], /Rejected tail detail|extra observation/);
         assert.doesNotMatch(JSON.stringify(result.evidence), /Rejected tail detail|extra observation/);
+        const id = mode === "combined" ? "image:24:text" : "image:24:visual";
+        assert.deepEqual(result.findings.map((item) => item.evidence_ids), [[id]]);
+        assert.ok(result.analysis?.includes(`第 24 页 (${id})`));
+        assert.doesNotMatch(result.analysis ?? "", /Rejected tail detail|image:28:visual/);
         assert.equal(fake.calls.disposed, 1);
       } finally { await fake.cleanup(); }
     });
@@ -403,9 +407,13 @@ test("combined mode can complete a photo note with no readable text when every p
   } finally { await fake.cleanup(); }
 });
 
-test("missing or unreadable OCR pages retain evidence but never claim complete article coverage", async () => {
+test("core: Xiaohongshu keeps body and early OCR citations when the last page cannot be read", async () => {
   for (const missing of [true, false]) {
     const fake = await fixture(3);
+    fake.respond({ findings: [
+      { statement: "保留人的判断。", evidence_ids: ["note:body"] },
+      { statement: "第二页有可读文字。", evidence_ids: ["image:2:text"] },
+    ] });
     fake.dependencies.ocr = async () => [
       { page: 1, text: "Readable first page", method: "apple_vision", warnings: [] },
       { page: 2, text: "Readable second page", method: "apple_vision", warnings: [] },
@@ -414,9 +422,13 @@ test("missing or unreadable OCR pages retain evidence but never claim complete a
     try {
       const result = noteResult(await researchXiaohongshuNote(request, fake.dependencies));
       assert.equal(result.status, "partial");
-      assert.ok(result.evidence.some((item) => item.id === "image:1:text"));
-      assert.equal(result.evidence.some((item) => item.id === "image:3:text"), false);
+      assert.deepEqual(result.evidence.map(({id,page}) => [id,page]), [["note:body",null], ["image:1:text",1], ["image:2:text",2]]);
+      assert.deepEqual(result.processing.selected_pages, [1, 2, 3]);
       assert.deepEqual(result.processing.processed_pages, [1, 2]);
+      assert.deepEqual(result.findings.map((item) => item.evidence_ids), [["note:body"], ["image:2:text"]]);
+      assert.match(result.analysis ?? "", /笔记正文 \(note:body\)/);
+      assert.match(result.analysis ?? "", /第 2 页 \(image:2:text\)/);
+      assert.doesNotMatch(result.analysis ?? "", /image:3:text/);
       if (missing) assert.ok(result.errors.some((item) => item.code === "OCR_INCOMPLETE"));
       assert.equal(fake.calls.disposed, 1);
     } finally { await fake.cleanup(); }

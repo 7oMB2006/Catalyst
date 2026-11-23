@@ -11,6 +11,7 @@
     "dev": "tsx src/index.ts",
     "doctor": "node dist/doctor.js",
     "test": "tsx --test test/*.test.ts",
+    "test:core": "tsx --test --test-name-pattern=^core: test/adapters.test.ts test/mcp.test.ts test/note-research.test.ts",
     "task": "node dist/research-task-cli.js"
   },
   "engines": {

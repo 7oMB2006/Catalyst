@@ -8,6 +8,7 @@ import { parseJson3Captions } from "../src/adapters/youtube.js";
 import { resolveBilibiliUrl } from "../src/adapters/bilibili.js";
 import { credentialArgs, downloadMedia, inspectDownloader, runYtDlp } from "../src/acquisition.js";
 import type { ExecutionContext, ResearchRequest } from "../src/contracts.js";
+import { researchVideo } from "../src/research.js";
 
 function context(ms = 5000): ExecutionContext { return { signal: AbortSignal.timeout(ms), deadlineMs: Date.now() + ms }; }
 const request: ResearchRequest = { url: "https://www.bilibili.com/video/BV1Dg5W69Ecx/?p=2", question: "What is said?", mode: "language", language: "en" };
@@ -101,14 +102,15 @@ async function fakeDownloader(metadata: Record<string, unknown> = {}) {
   const directory = await fs.mkdtemp(path.join(tmpdir(), "catalyst-adapter-test-"));
   const script = path.join(directory, "downloader.cjs");
   const log = path.join(directory, "args.json");
+  const history = path.join(directory, "history.jsonl");
   const source = { id: "jNQXAC9IVRw", title: "Test sample", duration: 19, language: "en",
     formats: [{ format_id: "18", vcodec: "h264", acodec: "aac", width: 320, height: 240, fps: 15 }],
     subtitles: { en: [{ ext: "json3" }] }, automatic_captions: { zh: [{ ext: "json3" }] }, ...metadata };
-  await fs.writeFile(script, `const fs=require('node:fs');const path=require('node:path');const args=process.argv.slice(2);fs.writeFileSync(${JSON.stringify(log)},JSON.stringify(args));
+  await fs.writeFile(script, `const fs=require('node:fs');const path=require('node:path');const args=process.argv.slice(2);fs.writeFileSync(${JSON.stringify(log)},JSON.stringify(args));fs.appendFileSync(${JSON.stringify(history)},JSON.stringify(args)+"\\n");
 if(args.includes('--fail')){process.stderr.write('ERROR: https://media.test/file?token=private-token and sk-testsecret');process.exit(1);}
 if(args.includes('--hang')){setTimeout(()=>{},5000);}else if(args.includes('--write-subs')||args.includes('--write-auto-subs')){const template=args[args.indexOf('-o')+1];fs.writeFileSync(template.replace('%(ext)s',args.includes('--write-auto-subs')?'zh.json3':'en.json3'),JSON.stringify({events:[{tStartMs:1000,dDurationMs:2000,segs:[{utf8:'A platform caption'}]}]}));}
 else {console.log(${JSON.stringify(JSON.stringify(source))});}`);
-  return { directory, script, log };
+  return { directory, script, log, history };
 }
 
 test("YouTube uses manual or automatic language tracks and keeps platform credentials isolated", async () => {
@@ -172,6 +174,62 @@ test("YouTube uses a reported source language or a documented manual fallback wh
         });
       } finally { await fs.rm(fake.directory, { recursive: true, force: true }); }
     });
+  }
+});
+
+test("core: YouTube answers a Chinese question from timed English platform captions without media or ASR", async () => {
+  const fake = await fakeDownloader({
+    language: null,
+    subtitles: { en: [{ ext: "json3", url: "https://www.youtube.com/api/timedtext?lang=en" }] },
+    automatic_captions: {},
+  });
+  const originalFetch = globalThis.fetch;
+  const calls: string[] = [];
+  globalThis.fetch = async (url, init) => {
+    calls.push(String(url));
+    assert.equal(String(url), "https://provider.fixture/v1/chat/completions");
+    const prompt = JSON.parse(String(init?.body)).messages[0].content;
+    assert.match(prompt, /Answer in the language of the user's question/);
+    assert.match(prompt, /这段字幕写了什么？/);
+    assert.match(prompt, /A platform caption/);
+    return Response.json({ choices: [{ message: { content: JSON.stringify({
+      analysis: "This separate summary has no answer.",
+      findings: [{ statement: "这是一条平台字幕。", evidence_ids: ["caption:1"], limitations: [] }],
+    }) } }] });
+  };
+  try {
+    await withEnv({
+      YTDLP_PATH: fake.script, YTDLP_PYTHON: process.execPath, YOUTUBE_COOKIES_FILE: undefined,
+      YOUTUBE_COOKIES_FROM_BROWSER: undefined, CODEX_VIDEO_PROVIDER: "stepfun",
+      STEPFUN_API_KEY: "fixture-core-key", STEPFUN_BASE_URL: "https://provider.fixture/v1",
+    }, async () => {
+      const result = await researchVideo({
+        url: "https://youtu.be/jNQXAC9IVRw", mode: "language", language: "zh",
+        question: "这段字幕写了什么？", startSeconds: 0, endSeconds: 8,
+      });
+      assert.equal(result.status, "complete", JSON.stringify(result.errors));
+      assert.equal(result.capabilities.captions.status, "available");
+      assert.match(result.warnings.join("\n"), /original spoken language is unverified/i);
+      const captions = result.evidence.filter((item) => item.kind === "caption");
+      assert.deepEqual(captions.map(({ id, content, language, time_range, precision, source }) =>
+        [id, content, language, time_range, precision, source.origin]), [
+        ["caption:1", "A platform caption", "en", { start_seconds: 1, end_seconds: 3 }, "caption_cue", "platform_manual_caption"],
+      ]);
+      assert.deepEqual(result.findings.map((item) => item.evidence_ids), [["caption:1"]]);
+      assert.match(result.analysis ?? "", /这是一条平台字幕。/);
+      assert.match(result.analysis ?? "", /字幕区间 1–3 秒 \(caption:1\)/);
+      assert.doesNotMatch(result.analysis ?? "", /separate summary/);
+      assert.deepEqual(calls, ["https://provider.fixture/v1/chat/completions"]);
+      const steps = (await fs.readFile(fake.history, "utf8")).trim().split("\n").map(line => JSON.parse(line) as string[]);
+      assert.equal(steps.length, 2);
+      assert.ok(steps[0].includes("--dump-single-json"));
+      assert.ok(steps[1].includes("--write-subs"));
+      assert.equal(steps[1][steps[1].indexOf("--sub-langs") + 1], "^en$");
+      assert.ok(steps.every(step => step.includes("--skip-download")));
+    });
+  } finally {
+    globalThis.fetch = originalFetch;
+    await fs.rm(fake.directory, { recursive: true, force: true });
   }
 });
 
