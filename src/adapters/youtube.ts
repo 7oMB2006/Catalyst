@@ -15,30 +15,78 @@ export function youtubeId(url: URL): string {
 
 type Track = { ext?: string; url?: string; name?: string };
 type Tracks = Record<string, Track[]>;
+type TrackChoice = { key: string; automatic: boolean; translated: boolean };
 
-function chooseTrack(metadata: Record<string, unknown>, preferred?: string): { language: string; kind: "manual" | "automatic" | "unknown"; automatic: boolean; reason?: string } | undefined {
+function trackChoices(tracks: Tracks, automatic: boolean): TrackChoice[] {
+  return Object.entries(tracks).flatMap(([key, formats]) => {
+    const json3 = formats.filter((track) => track.ext === "json3");
+    if (!json3.length) return [];
+    const translated = json3.some((track) => {
+      try { return Boolean(track.url && new URL(track.url).searchParams.has("tlang")); } catch { return false; }
+    });
+    return [{ key, automatic, translated }];
+  });
+}
+
+function originalLanguage(metadata: Record<string, unknown>, automatic: Tracks): string | undefined {
+  // yt-dlp identifies original ASR aliases and marks explicitly original audio formats.
+  const reported = Object.keys(automatic).filter((key) => /-orig$/i.test(key)).map((key) => key.slice(0, -5));
+  if (Array.isArray(metadata.formats)) {
+    for (const format of metadata.formats) {
+      if (typeof format?.language === "string" && typeof format.format_note === "string" && /\(original\)/i.test(format.format_note)) {
+        reported.push(format.language);
+      }
+    }
+  }
+  const distinct = new Set(reported.map((key) => key.split("-")[0].toLowerCase()));
+  if (distinct.size === 1) return reported[0];
+  if (!distinct.size && typeof metadata.language === "string") return metadata.language.trim() || undefined;
+  return undefined;
+}
+
+function matchTrack(tracks: TrackChoice[], language?: string): TrackChoice | undefined {
+  const target = language?.toLowerCase();
+  if (!target) return undefined;
+  return tracks.find(({ key }) => key.toLowerCase() === target)
+    ?? tracks.find(({ key }) => key.toLowerCase().startsWith(`${target}-`));
+}
+
+function defaultTrack(tracks: TrackChoice[]): TrackChoice | undefined {
+  return tracks.find(({ key }) => key === "en") ?? tracks.find(({ key }) => !key.includes("-")) ?? tracks[0];
+}
+
+function chooseTrack(metadata: Record<string, unknown>, preferred?: string): (TrackChoice & { language: string; kind: Captions["kind"]; reason?: string }) | undefined {
   const manual = (metadata.subtitles ?? {}) as Tracks;
   const automatic = (metadata.automatic_captions ?? {}) as Tracks;
-  const original = typeof metadata.language === "string" ? metadata.language : undefined;
+  const manualChoices = trackChoices(manual, false);
+  const autoChoices = trackChoices(automatic, true);
+  const original = originalLanguage(metadata, automatic);
   const target = preferred ?? original;
-  const pick = (tracks: Tracks, fallback: boolean): string | undefined => {
-    const keys = Object.keys(tracks).filter((key) => tracks[key].some((track) => track.ext === "json3"));
-    const matched = target ? keys.find((key) => key.toLowerCase() === target.toLowerCase()) ?? keys.find((key) => key.toLowerCase().startsWith(`${target.toLowerCase()}-`)) : undefined;
-    return matched ?? (fallback ? keys.find((key) => key === "en") ?? keys.find((key) => !key.includes("-")) ?? keys[0] : undefined);
-  };
-  const matchedManual = pick(manual, false);
-  const matchedAutomatic = pick(automatic, false);
-  const language = matchedManual ?? matchedAutomatic ?? (!preferred ? pick(manual, true) ?? pick(automatic, true) : undefined);
-  if (!language) return undefined;
-  const isAutomatic = !manual[language]?.some((track) => track.ext === "json3");
-  const tracks = isAutomatic ? automatic[language] : manual[language];
-  const translatedUrl = tracks.some((track) => {
-    try { return Boolean(track.url && new URL(track.url).searchParams.has("tlang")); } catch { return false; }
-  });
-  const differentSourceLanguage = Boolean(original && language.split("-")[0] !== original.split("-")[0]);
-  const uncertainTranslation = translatedUrl || (isAutomatic && differentSourceLanguage);
-  return { language, automatic: isAutomatic, kind: uncertainTranslation ? "unknown" : isAutomatic ? "automatic" : "manual",
-    ...(uncertainTranslation ? { reason: translatedUrl ? "The selected platform caption track is translated; its timing is not alignment to original-language words." : "The automatic track language differs from the source-reported language; original versus translated origin is unverified." } : {}) };
+  let chosen = matchTrack(manualChoices, target) ?? matchTrack(autoChoices, target);
+  let fallback = false;
+  if (!chosen && preferred) {
+    const manualFallback = manualChoices.filter((track) => !track.translated);
+    if (original) {
+      const autoFallback = autoChoices.filter((track) => !track.translated);
+      const primary = original.split("-")[0];
+      chosen = matchTrack(manualFallback, original) ?? matchTrack(autoFallback, original)
+        ?? matchTrack(manualFallback, primary) ?? matchTrack(autoFallback, primary);
+    } else {
+      chosen = defaultTrack(manualFallback);
+    }
+    fallback = Boolean(chosen);
+  } else if (!chosen) {
+    chosen = defaultTrack(manualChoices) ?? defaultTrack(autoChoices);
+  }
+  if (!chosen) return undefined;
+  const language = chosen.automatic ? chosen.key.replace(/-orig$/i, "") : chosen.key;
+  const differentSourceLanguage = Boolean(original && language.split("-")[0].toLowerCase() !== original.split("-")[0].toLowerCase());
+  const uncertainTranslation = chosen.translated || (chosen.automatic && differentSourceLanguage);
+  const reason = fallback
+    ? `No JSON3 caption track matches the preferred language. Using ${language} ${original ? "captions matching the reported source language." : "manual captions. The original spoken language is unverified."}`
+    : chosen.translated ? "The selected platform caption track is translated; its timing is not alignment to original-language words."
+      : uncertainTranslation ? "The automatic track language differs from the source-reported language; original versus translated origin is unverified." : undefined;
+  return { ...chosen, language, kind: uncertainTranslation ? "unknown" : chosen.automatic ? "automatic" : "manual", reason };
 }
 
 export function parseJson3Captions(value: unknown): CaptionCue[] {
@@ -56,11 +104,11 @@ export function parseJson3Captions(value: unknown): CaptionCue[] {
 
 async function fetchCaptions(metadata: Record<string, unknown>, url: string, preferred: string | undefined, context: ExecutionContext): Promise<Captions> {
   const track = chooseTrack(metadata, preferred);
-  if (!track) return { status: "absent", kind: "unknown", cues: [], reason: preferred ? "No JSON3 caption track matches the requested language." : "No platform JSON3 caption track was advertised." };
+  if (!track) return { status: "absent", kind: "unknown", cues: [], reason: preferred ? "No matching or usable fallback JSON3 caption track was advertised." : "No platform JSON3 caption track was advertised." };
   const directory = await fs.mkdtemp(path.join(tmpdir(), "catalyst-captions-"));
   try {
     // Request an exact escaped language to avoid interpreting user input as a yt-dlp regex.
-    const language = track.language.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const language = track.key.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
     await runYtDlp(["--skip-download", track.automatic ? "--write-auto-subs" : "--write-subs", "--sub-langs", `^${language}$`, "--sub-format", "json3", "-o", path.join(directory, "caption.%(ext)s"), "--", url], "youtube", context);
     const files = (await fs.readdir(directory)).filter((name) => name.endsWith(".json3"));
     if (!files.length) return { status: "error", kind: track.kind, language: track.language, cues: [], reason: "The advertised caption track could not be downloaded." };
@@ -68,7 +116,8 @@ async function fetchCaptions(metadata: Record<string, unknown>, url: string, pre
     const stat = await fs.stat(filename);
     if (stat.size > 8 * 1024 * 1024) throw new AcquisitionError("RESOURCE_LIMIT", "The caption track exceeds the 8 MiB limit.");
     const cues = parseJson3Captions(JSON.parse(await fs.readFile(filename, "utf8")));
-    return { status: cues.length ? "available" : "absent", kind: track.kind, language: track.language, cues, reason: track.reason };
+    return { status: cues.length ? "available" : "absent", kind: track.kind, language: track.language, cues,
+      reason: cues.length ? track.reason : "The selected caption track returned no timed cues." };
   } catch (error) {
     if (context.signal.aborted) throw error;
     return { status: error instanceof AcquisitionError && error.code === "AUTH_REQUIRED" ? "auth_required" : "error", kind: track.kind, language: track.language, cues: [], reason: safeDiagnostic(error instanceof Error ? error.message : String(error)) };
