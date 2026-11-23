@@ -1,28 +1,42 @@
-# Model Compatibility Test History
+# Model Setup and Compatibility
 
-This document records exploratory model tests separately from the project's
-stable defaults. A model appearing here does not mean that it is a recommended
-provider, a fully supported mode, or a production-quality replacement.
+Choose models by the inputs Catalyst needs to read and the output contract for
+each task. See the capability tables in the [English README](../README.md#model-setup)
+or [中文 README](../README.zh-CN.md#模型搭配).
+
+## Configuration examples
+
+Enable one block in your local `.env` using [the template](../.env.example).
+Catalyst selects one provider per server process. Its text, image, video and
+transcription routes cannot be assigned to different providers independently.
+Local OCR is a separate choice where macOS Swift/Vision is available.
+
+| Provider | Text, images and video | Audio transcription | Catalyst validation |
+| --- | --- | --- | --- |
+| Gemini | Set `GEMINI_VIDEO_MODEL` to a model your account can call for the required inputs. The template shows [`gemini-3.5-flash-lite`](https://aistudio.google.com/docs/models/gemini-3.5-flash-lite), whose API documents text, image, video and audio input and structured output. | Catalyst prompts the same model to transcribe extracted audio. | The Gemini adapter and native image-note request shape have SDK/mock coverage. The example model has no recorded live Catalyst check; verify the workflows you intend to use. |
+| StepFun | `step-3.7-flash` through the Open Platform or Step Plan adapter. Use the base URL matching the key. | `stepaudio-2.5-asr` through the selected StepFun endpoint. | [Live video and ASR checks](./validation.md) are recorded. [Native image-note schema](#2026-11-07--image-note-native-structured-output) was tested on Step Plan with `step-3.7-flash`. |
+
+`npm run doctor` checks local dependencies and credential presence. To verify
+the configured model and endpoint, run a small real read for each capability
+you plan to use. See [core reader acceptance](./core-reader-acceptance.md)
+for bounded examples. Platform access can fail independently of model support.
+
+## Runtime defaults
+
+If `CODEX_VIDEO_PROVIDER` is unset, the runtime uses `stepfun`. When model
+overrides are unset, StepFun uses `step-3.7-flash` for analysis and
+`stepaudio-2.5-asr` for transcription. Gemini uses `gemini-2.5-flash` if
+`GEMINI_VIDEO_MODEL` is unset. Set the Gemini model ID explicitly because
+[Google has deprecated `gemini-2.5-flash`](https://aistudio.google.com/docs/deprecations#gemini-2.5-flash-models).
 
 ## Status vocabulary
 
-- `default`: used by the documented stable path.
+- `default`: runtime value used when an override is omitted.
 - `interface-compatible`: accepted the request shape used by this MCP.
 - `vision-only`: visual input worked, but language or multimodal support was not
   established.
-- `experimental`: tested for compatibility or behavior, but not benchmarked
-  sufficiently for default use.
+- `experimental`: tested for compatibility or behavior without broad evaluation.
 - `pending`: not tested yet.
-
-## Stable defaults
-
-| Capability | Default model | Channel |
-| --- | --- | --- |
-| Video understanding | `step-3.7-flash` | StepFun Open Platform or Step Plan |
-| No-caption ASR fallback | `stepaudio-2.5-asr` | StepFun Open Platform or Step Plan |
-
-These defaults remain unchanged when newer models are added to the compatibility
-record.
 
 ## Test records
 
@@ -37,7 +51,7 @@ record.
 | Position | Historical experiment; not a documented provider configuration |
 
 This experiment does not establish `language` or full `multimodal` support for
-the project and does not change StepFun's default status.
+the project.
 
 ### 2026-09-22 — StepFun `step-5-preview`
 

@@ -25,7 +25,7 @@ Requirements:
 - Node.js 24 or newer.
 - Python 3.10 or newer when using a Python-based yt-dlp distribution.
 - A working yt-dlp installation with EJS for YouTube, plus FFmpeg.
-- A StepFun or Gemini credential for model analysis.
+- API credentials for model analysis. [Choose a model setup](#model-setup) for the sources you want to read.
 
 ```bash
 git clone https://github.com/7oMB2006/Catalyst.git
@@ -33,7 +33,7 @@ cd Catalyst
 npm ci
 npm run build
 cp .env.example .env
-# Configure the provider and any external binary paths in .env.
+# Enable one model configuration and set any external tool paths in .env.
 npm run doctor
 npm test
 ```
@@ -57,6 +57,24 @@ The inherited `yt-dlp-exec` package is optional. Its install hook invokes `pytho
 
 `npm run doctor` runs the compiled `dist/doctor.js`, so build first. It checks local executable versions and whether a provider credential is configured. It does not contact video platforms or providers, read browser cookies, or test account balance. EJS detection can be inconclusive for standalone binaries; review any warning before a YouTube request. See the [upstream EJS setup guide](https://github.com/yt-dlp/yt-dlp/wiki/EJS).
 
+### Model setup
+
+Choose capabilities based on what Catalyst needs to read. These settings control Catalyst's reader; the host agent can keep its own conversation model.
+
+| What you want to read | Capabilities needed |
+| --- | --- |
+| Platform captions, note body text, or extracted OCR text | Text analysis and synthesis for answers with citations. Usable captions do not require transcription. |
+| Video without usable captions | Audio transcription (ASR) plus text analysis. Long-video `multimodal` mode also transcribes audio separately. |
+| Interfaces, visible actions, or visual explanations in a video | Video input. `vision` reads a silent clip; `multimodal` also needs audio support. |
+| Text, layouts, or charts in image notes | OCR can use local macOS Swift/Vision or a model with image input. For layouts and charts, image-note `vision` / `combined` also needs native JSON Schema output on the chosen model and endpoint. |
+
+| Example setup | How models share the work | Catalyst validation |
+| --- | --- | --- |
+| Gemini | A multimodal model handles text, images, video, and extracted audio. Catalyst uses the same model to transcribe the audio. | The Gemini adapter is implemented. Native image-note Schema has SDK and mock coverage; verify the exact model and account in use. |
+| StepFun | `step-3.7-flash` handles text, images, and video; `stepaudio-2.5-asr` handles transcription. | Live video and ASR runs are recorded. Native image-note Schema was verified with this analysis model on Step Plan. |
+
+Use [`.env.example`](./.env.example) as a template and enable one configuration block in your local `.env`. The selected provider handles text, vision, and transcription for that server process. See [model setup and compatibility](./docs/model-compatibility.md) for configuration and validation details.
+
 ## Start the MCP server
 
 ```bash
@@ -65,7 +83,7 @@ npm start
 
 This starts the compiled stdio server. In an MCP host, use `node` as the command and the absolute path to `dist/index.js` as its argument. Set `DOTENV_CONFIG_PATH` to the absolute path to the local `.env` file when the host starts in a different directory. Configure the host's tool timeout to cover the requested research timeout and startup overhead.
 
-Provider credentials belong in the process environment or local `.env`, rather than the host's checked-in configuration. `CODEX_VIDEO_PROVIDER` remains the historical provider selector: `stepfun` by default, or `gemini`.
+Provider credentials belong in the process environment or local `.env`, rather than the host's checked-in configuration.
 
 ## Read a selected link
 
