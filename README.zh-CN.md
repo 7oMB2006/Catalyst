@@ -79,6 +79,10 @@ FFMPEG_PATH=/absolute/path/to/ffmpeg
 
 ## 接入 MCP
 
+构建后运行 `npm run setup`，打开终端打印的本地地址。页面可保存模型、API Key 和外部工具路径，再检查本机依赖。配置写入安装目录的 `.env`，也可通过 `DOTENV_CONFIG_PATH` 指定文件。Codex 或 Claude Code 的 CLI 在 `PATH` 中时，可用页面按钮直接注册到相应宿主的用户配置；已有不同的 `catalyst` 条目会保留。其他宿主可复制 JSON，按宿主要求填写。接入条目只包含启动和配置文件路径，API Key 留在本地文件；保存后重新启动各宿主里的 Catalyst 连接即可生效。
+
+也可以直接启动 stdio 服务：
+
 ```bash
 npm start
 ```
