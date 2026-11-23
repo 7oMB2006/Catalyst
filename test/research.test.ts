@@ -85,6 +85,8 @@ test("unknown, metadata-only and mixed hallucinated citations are rejected", asy
     assert.equal(result.status, "partial");
     assert.deepEqual(result.findings.map((item) => item.statement), ["First instruction"]);
     assert.match(result.warnings.join(" "), /3 finding\(s\) were discarded/);
+    assert.match(result.analysis ?? "", /First instruction/);
+    assert.doesNotMatch(result.analysis ?? "", /Invented precise frame|Title alone proves event|Partially fabricated support|Unverified response/);
   });
 });
 
@@ -267,6 +269,7 @@ test("audio-only acquisition supports a nonzero language window without requirin
   source.capabilities.captions = { status: "absent" };
   const fake = adapter(source);
   let disposed = false;
+  let synthesisCalls = 0;
   fake.acquire = async () => ({ path: sourcePath, bytes: 10, dispose: async () => { disposed = true; } });
   try {
     await provider("unused", async () => {
@@ -274,11 +277,19 @@ test("audio-only acquisition supports a nonzero language window without requirin
         if (String(url).endsWith("/audio/asr/sse")) {
           const body = JSON.parse(String(init?.body));
           assert.equal(body.audio.input.transcription.language, "en");
-          return new Response('data: {"type":"transcript.text.done","text":"An audio instruction"}\n\n', { status: 200 });
+          return new Response('data: {"type":"transcript.text.done","text":"Check the battery, then restart the device."}\n\n', { status: 200 });
         }
+        synthesisCalls++;
         const body = JSON.parse(String(init?.body));
-        assert.match(body.messages[0].content, /An audio instruction/);
-        return new Response(JSON.stringify({ choices: [{ message: { content: JSON.stringify({ analysis: "An audio instruction", findings: [{ statement: "An audio instruction", evidence_ids: ["asr:1"] }] }) } }] }), { status: 200 });
+        assert.match(body.messages[0].content, /Check the battery, then restart the device/);
+        const content = JSON.stringify({
+          analysis: "The only available evidence is an automated transcript.",
+          findings: [
+            { statement: "Check the battery.", evidence_ids: ["asr:1"] },
+            { statement: "Then restart the device.", evidence_ids: ["asr:1"], limitations: ["The exact restart time is unclear."] },
+          ],
+        });
+        return new Response(JSON.stringify({ choices: [{ message: { content } }] }), { status: 200 });
       }) as typeof fetch;
       const result = await researchVideo({ ...request, startSeconds: 25, endSeconds: 35, language: "en" }, [fake]);
       assert.equal(result.status, "complete");
@@ -286,9 +297,14 @@ test("audio-only acquisition supports a nonzero language window without requirin
       assert.equal(args[args.indexOf("-ss") + 1], "25");
       assert.equal(args[args.indexOf("-t") + 1], "10");
       const evidence = result.evidence.find((item) => item.kind === "asr")!;
-      assert.equal(evidence.content, "An audio instruction");
+      assert.equal(evidence.content, "Check the battery, then restart the device.");
       assert.equal(evidence.precision, "requested_window");
       assert.deepEqual(evidence.time_range, { start_seconds: 25, end_seconds: 35 });
+      assert.equal(synthesisCalls, 1);
+      assert.match(result.analysis ?? "", /Check the battery\.[\s\S]+Then restart the device\./);
+      assert.match(result.analysis ?? "", /25–35 s \(asr:1\)/);
+      assert.match(result.analysis ?? "", /The exact restart time is unclear\./);
+      assert.doesNotMatch(result.analysis ?? "", /The only available evidence is an automated transcript/);
       assert.equal(disposed, true);
     });
   } finally {
