@@ -5,80 +5,111 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="catalyst-setup" content="__SETUP_TOKEN__">
   <title>Catalyst · 本地设置</title>
-  <link rel="stylesheet" href="/style.css">
-  <script src="/app.js" defer></script>
+  <link rel="stylesheet" href="./style.css">
+  <script src="./app.js" defer></script>
 </head>
 <body>
-  <header class="top"><span class="mark" aria-hidden="true">C</span><strong>Catalyst</strong><span class="chip">本地设置</span></header>
-  <main>
-    <div class="intro">
-      <p class="eyebrow">MCP SETUP</p>
-      <h1>配置 Catalyst</h1>
-      <p>模型和工具路径在这里设置一次。接入的宿主使用同一份配置。</p>
-      <p class="filepath" id="location"></p>
+  <header class="topbar">
+    <div class="wrap topbar-inner">
+      <span class="brand"><span class="brand-mark" aria-hidden="true"></span>Catalyst</span>
+      <span class="endpoint" id="endpoint" hidden></span>
     </div>
+  </header>
+  <main class="wrap">
+    <header class="banner">
+      <canvas id="terrain" aria-hidden="true" width="580" height="200"></canvas>
+      <div class="banner-copy">
+        <h1>本地设置</h1>
+        <p>管理模型、工具路径与 <span>MCP 宿主连接。</span></p>
+      </div>
+    </header>
     <noscript>请启用 JavaScript 使用本地设置页。</noscript>
-    <section class="card" aria-labelledby="settings-heading">
-      <div class="section-title"><span class="index">01</span><div><h2 id="settings-heading">模型和工具</h2><p>选择用于读取来源的模型。已有 API Key 不会在页面上显示。</p></div></div>
-      <form id="settings" autocomplete="off">
-        <fieldset id="editor" disabled>
-          <label class="field">模型服务
-            <select name="CODEX_VIDEO_PROVIDER" required>
-              <option value="" disabled>选择模型服务</option>
-              <option value="gemini">Gemini</option>
-              <option value="stepfun">阶跃星辰（StepFun）</option>
-            </select>
-          </label>
-          <div id="gemini-fields">
-            <p class="note">一个多模态模型负责文字、图片、视频和音频转写。</p>
-            <div class="grid">
+    <div class="workspace">
+      <section class="panel settings-panel" aria-labelledby="settings-heading">
+        <header class="panel-title">
+          <h2 id="settings-heading">模型配置</h2>
+          <p>选择 Catalyst 读取视频、图文和音频时使用的模型服务。</p>
+        </header>
+        <form id="settings" autocomplete="off">
+          <fieldset id="editor" disabled>
+            <fieldset class="providers">
+              <legend class="visually-hidden">模型服务</legend>
+              <label class="provider-option">
+                <input type="radio" name="CODEX_VIDEO_PROVIDER" value="gemini" required>
+                <span class="provider-glyph gemini" aria-hidden="true">✦</span>
+                <strong>Gemini</strong>
+                <span class="provider-note">同一模型读取与转写</span>
+              </label>
+              <label class="provider-option">
+                <input type="radio" name="CODEX_VIDEO_PROVIDER" value="stepfun" required>
+                <span class="provider-glyph stepfun" aria-hidden="true"></span>
+                <strong>StepFun</strong>
+                <span class="provider-note">阶跃星辰 · 独立转写模型</span>
+              </label>
+            </fieldset>
+            <p id="provider-prompt" class="provider-prompt">选择模型服务后，可以填写模型 ID 和 API Key。</p>
+            <div id="gemini-fields" class="field-grid" hidden>
               <label class="field">模型 ID<input name="GEMINI_VIDEO_MODEL" placeholder="gemini-3.5-flash-lite" spellcheck="false"></label>
               <label class="field">API Key <small id="gemini-key"></small><input name="GEMINI_API_KEY" type="password" autocomplete="new-password" spellcheck="false"></label>
             </div>
-          </div>
-          <div id="stepfun-fields" hidden>
-            <p class="note">一个多模态模型负责阅读，另一个模型负责音频转写。</p>
-            <div class="grid">
+            <div id="stepfun-fields" class="field-grid" hidden>
               <label class="field">读取模型<input name="STEPFUN_VIDEO_MODEL" placeholder="step-3.7-flash" spellcheck="false"></label>
               <label class="field">转写模型<input name="STEPFUN_ASR_MODEL" placeholder="stepaudio-2.5-asr" spellcheck="false"></label>
               <label class="field">API 地址<input name="STEPFUN_BASE_URL" placeholder="https://api.stepfun.com/v1" spellcheck="false"></label>
               <label class="field">API Key <small id="stepfun-key"></small><input name="STEPFUN_API_KEY" type="password" autocomplete="new-password" spellcheck="false"></label>
             </div>
-          </div>
-          <details>
-            <summary>外部工具路径</summary>
-            <p>使用内置或默认工具时可以留空。自定义路径会影响视频获取和处理。</p>
-            <div class="grid">
-              <label class="field">FFmpeg<input name="FFMPEG_PATH" spellcheck="false"></label>
-              <label class="field">yt-dlp<input name="YTDLP_PATH" spellcheck="false"></label>
-              <label class="field">Python（运行 yt-dlp）<input name="YTDLP_PYTHON" spellcheck="false"></label>
+            <details class="tool-paths">
+              <summary>外部工具路径<span class="summary-note">可选</span></summary>
+              <p>留空时使用默认工具，也可以指定可执行文件的路径。</p>
+              <div class="field-grid">
+                <label class="field">FFmpeg<input name="FFMPEG_PATH" spellcheck="false"></label>
+                <label class="field">yt-dlp<input name="YTDLP_PATH" spellcheck="false"></label>
+                <label class="field">Python（运行 yt-dlp）<input name="YTDLP_PYTHON" spellcheck="false"></label>
+              </div>
+            </details>
+            <div class="actions">
+              <button type="submit" class="primary">保存配置</button>
+              <button type="button" id="doctor">检查已保存的配置</button>
+              <span class="draft" id="draft" hidden>有未保存的更改</span>
             </div>
-          </details>
-          <div class="actions">
-            <button type="submit" class="primary">保存配置</button>
-            <button type="button" id="doctor">检查已保存的配置</button>
+          </fieldset>
+        </form>
+        <p class="status" id="settings-status" role="status">正在读取本地配置…</p>
+        <ul id="checks" class="checks" aria-label="本地检查结果" hidden></ul>
+      </section>
+      <div class="side">
+        <section class="panel" aria-labelledby="hosts-heading">
+          <header class="panel-title">
+            <h2 id="hosts-heading">宿主接入</h2>
+            <p>将 Catalyst 添加到宿主的用户配置中。</p>
+          </header>
+          <div class="host-row">
+            <span class="host-icon terminal" aria-hidden="true">›_</span><strong>Codex</strong>
+            <button type="button" data-host="codex" aria-label="接入 Codex" disabled>接入</button>
           </div>
-        </fieldset>
-      </form>
-      <p class="status" id="settings-status" role="status" aria-live="polite">正在读取本地配置…</p>
-      <ul id="checks" class="checks" hidden></ul>
-    </section>
-    <section class="card" aria-labelledby="hosts-heading">
-      <div class="section-title"><span class="index">02</span><div><h2 id="hosts-heading">接入宿主</h2><p>可把 Catalyst 加到多个宿主的用户配置中。每个宿主各自启动 MCP，读取上面同一份配置。</p></div></div>
-      <div class="grid hosts">
-        <div><strong>Codex</strong><button type="button" data-host="codex" disabled>接入 Codex</button></div>
-        <div><strong>Claude Code</strong><button type="button" data-host="claude" disabled>接入 Claude Code</button></div>
+          <div class="host-row">
+            <span class="host-icon claude" aria-hidden="true">✳</span><strong>Claude Code</strong>
+            <button type="button" data-host="claude" aria-label="接入 Claude Code" disabled>接入</button>
+          </div>
+          <p class="status" id="host-status" role="status"></p>
+          <details class="other-hosts">
+            <summary>复制配置给其他宿主</summary>
+            <p>将 JSON 粘贴到宿主的 MCP 配置中。模型密钥保存在本机。</p>
+            <pre id="snippet" tabindex="0"></pre>
+            <button type="button" id="copy" disabled>复制 JSON</button>
+            <p class="status" id="copy-status" role="status"></p>
+          </details>
+        </section>
+        <section class="file-panel" aria-labelledby="file-heading">
+          <div class="file-icon" aria-hidden="true"></div>
+          <div>
+            <h2 id="file-heading">共享配置文件</h2>
+            <code id="location"></code>
+            <p>各宿主读取同一份文件。保存后，重启宿主中的 Catalyst 连接即可生效。</p>
+          </div>
+        </section>
       </div>
-      <p class="status" id="host-status" role="status" aria-live="polite"></p>
-      <details>
-        <summary>复制配置给其他宿主</summary>
-        <p>根据宿主要求粘贴配置。模型凭据留在本地配置文件里。</p>
-        <pre id="snippet" tabindex="0"></pre>
-        <button type="button" id="copy" disabled>复制 JSON</button>
-        <p class="status" id="copy-status" role="status"></p>
-      </details>
-    </section>
-    <footer>保存配置后，重新启动宿主里的 Catalyst 连接即可生效。</footer>
+    </div>
   </main>
 </body>
 </html>
