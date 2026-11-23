@@ -25,7 +25,7 @@ Catalyst 逐个读取来源，返回证据、覆盖范围和该来源的分析�
 - Node.js 24 或更新版本。
 - 使用 Python 版 yt-dlp 时，需要 Python 3.10 或更新版本。
 - 可执行的 yt-dlp、YouTube 所需的 EJS，以及 FFmpeg。
-- 用于模型分析的 StepFun 或 Gemini 凭据。
+- 用于模型分析的 API 凭据。按实际要读的内容[选择模型搭配](#模型搭配)。
 
 ```bash
 git clone https://github.com/7oMB2006/Catalyst.git
@@ -33,7 +33,7 @@ cd Catalyst
 npm ci
 npm run build
 cp .env.example .env
-# 在 .env 配置 Provider，以及需要覆盖的可执行文件路径。
+# 在 .env 启用一组模型配置，并按需指定外部工具路径。
 npm run doctor
 npm test
 ```
@@ -59,6 +59,24 @@ FFMPEG_PATH=/absolute/path/to/ffmpeg
 
 `npm run doctor` 执行编译后的 `dist/doctor.js`，需要先完成 build。它只检查本机可执行文件和版本，以及 Provider 凭据是否已配置。它不会请求平台或模型，不读取浏览器 Cookie，也不验证账户余额。独立二进制文件中的 EJS 可能无法仅靠离线检查确认，YouTube 请求前应阅读相应提示。[yt-dlp 官方 EJS 说明](https://github.com/yt-dlp/yt-dlp/wiki/EJS)
 
+### 模型搭配
+
+按 Catalyst 要读的素材选能力。这里配置的是 Catalyst 的读取模型，宿主 Agent 可以继续使用自己的对话模型。
+
+| 想读什么 | 需要什么能力 |
+| --- | --- |
+| 平台字幕、笔记正文、已有 OCR 文字 | 文字理解和综合，用于生成带来源引用的回答。有可用字幕时无需语音转写。 |
+| 没有可用字幕的视频 | 音频转写（ASR）加文字理解。长视频的 `multimodal` 模式也会额外转写音频。 |
+| 视频里的界面、动作或讲解配合画面 | 支持视频输入；`vision` 只看静音画面，`multimodal` 还需要音频能力。 |
+| 图文笔记中的文字、布局或图表 | 提取文字用 OCR，可用本地 macOS Swift/Vision 或模型读图；理解布局和图表需要图片输入，图文 `vision` / `combined` 还要求所用模型与渠道支持原生 JSON Schema 输出。 |
+
+| 配置示例 | 模型如何分工 | Catalyst 验证范围 |
+| --- | --- | --- |
+| Gemini | 一个支持文字、图片、视频和音频输入的多模态模型；Catalyst 把提取出的音频交给同一个模型转写。 | 已接入 Gemini，图文原生 Schema 有 SDK 和模拟测试；具体模型与账号仍需实测。 |
+| 阶跃星辰（StepFun） | `step-3.7-flash` 负责文字、图片和视频理解，`stepaudio-2.5-asr` 负责音频转写。 | 已有真实视频及转写记录；图文原生 Schema 在 Step Plan 的这套配置上实测过。 |
+
+参照 [`.env.example`](./.env.example)，在本地 `.env` 中启用一组配置。当前一次运行选择一个 Provider，暂不支持把文字、视觉和转写分别接到不同 Provider。具体设置、历史默认值及验证范围见[模型配置与兼容记录](./docs/model-compatibility.md)。
+
 ## 接入 MCP
 
 ```bash
@@ -67,7 +85,7 @@ npm start
 
 这会启动编译后的 stdio MCP 服务。宿主配置的 command 使用 `node`，args 使用 `dist/index.js` 的绝对路径。宿主从其他目录启动时，将 `DOTENV_CONFIG_PATH` 设置为本地 `.env` 的绝对路径。宿主的工具超时应覆盖请求中的研究期限和启动开销。
 
-Provider 凭据放在进程环境或本地 `.env`，避免写入会提交到仓库的宿主配置。沿用的 `CODEX_VIDEO_PROVIDER` 是历史配置名：默认 `stepfun`，也可选择 `gemini`。
+Provider 凭据放在进程环境或本地 `.env`，避免写入会提交到仓库的宿主配置。
 
 ## 读取选定链接
 
