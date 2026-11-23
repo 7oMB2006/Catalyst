@@ -90,6 +90,8 @@ The reader plans every overview window in the selected source interval. A Bilibi
 | `vision` | Video with its audio removed. Visible text remains valid visual evidence. |
 | `multimodal` | Original audio and visual channels, with explicit ASR for long-video language evidence. |
 
+If YouTube has no caption track matching the preferred language, Catalyst looks for captions in the reported source language. When the original spoken language is unknown, Catalyst can select an available manual track using its default preference and report that uncertainty. Citations retain the track's language and original timing. The question and answer can use a different language. If the selected track cannot be read or does not cover the requested window, Catalyst can fall back to audio transcription.
+
 Overview media is prepared at up to 360p/1fps, and detail media at up to 720p/5fps. Complete overview coverage does not establish that every frame or formula was read. Defaults are a 512 MiB cumulative acquired-file budget, a 32 MiB prepared upload limit, and a 900-second shared deadline (configurable up to 1,800 seconds; the host timeout must be longer). Budget or deadline failures retain partial reports. Media is acquired by source window.
 
 ### Save and resume a reading

@@ -97,14 +97,17 @@ test("JSON3 cues preserve platform timing and reject untimed or empty events", (
   assert.deepEqual(cues, [{ start: 1.2, end: 2.1, content: "hello world" }]);
 });
 
-async function fakeDownloader() {
+async function fakeDownloader(metadata: Record<string, unknown> = {}) {
   const directory = await fs.mkdtemp(path.join(tmpdir(), "catalyst-adapter-test-"));
   const script = path.join(directory, "downloader.cjs");
   const log = path.join(directory, "args.json");
+  const source = { id: "jNQXAC9IVRw", title: "Test sample", duration: 19, language: "en",
+    formats: [{ format_id: "18", vcodec: "h264", acodec: "aac", width: 320, height: 240, fps: 15 }],
+    subtitles: { en: [{ ext: "json3" }] }, automatic_captions: { zh: [{ ext: "json3" }] }, ...metadata };
   await fs.writeFile(script, `const fs=require('node:fs');const path=require('node:path');const args=process.argv.slice(2);fs.writeFileSync(${JSON.stringify(log)},JSON.stringify(args));
 if(args.includes('--fail')){process.stderr.write('ERROR: https://media.test/file?token=private-token and sk-testsecret');process.exit(1);}
 if(args.includes('--hang')){setTimeout(()=>{},5000);}else if(args.includes('--write-subs')||args.includes('--write-auto-subs')){const template=args[args.indexOf('-o')+1];fs.writeFileSync(template.replace('%(ext)s',args.includes('--write-auto-subs')?'zh.json3':'en.json3'),JSON.stringify({events:[{tStartMs:1000,dDurationMs:2000,segs:[{utf8:'A platform caption'}]}]}));}
-else {console.log(JSON.stringify({id:'jNQXAC9IVRw',title:'Test sample',duration:19,language:'en',formats:[{format_id:'18',vcodec:'h264',acodec:'aac',width:320,height:240,fps:15}],subtitles:{en:[{ext:'json3'}]},automatic_captions:{zh:[{ext:'json3'}]}}));}`);
+else {console.log(${JSON.stringify(JSON.stringify(source))});}`);
   return { directory, script, log };
 }
 
@@ -135,6 +138,74 @@ test("YouTube uses manual or automatic language tracks and keeps platform creden
       await assert.rejects(() => downloadMedia(english.video, { ...request, sourceQuality: { profile: "standard" } }, context()), /Requested source quality/);
     });
   } finally { await fs.rm(fake.directory, { recursive: true, force: true }); }
+});
+
+test("YouTube uses a reported source language or a documented manual fallback when the preferred track is absent", async (t) => {
+  const english = { ext: "json3", url: "https://www.youtube.com/api/timedtext?lang=en" };
+  const german = { ext: "json3", url: "https://www.youtube.com/api/timedtext?lang=de" };
+  const cases = [
+    { title: "reported English", language: "en", subtitles: { de: [german], en: [english] }, automatic: {} },
+    { title: "source language unavailable", language: null, subtitles: { de: [german], en: [english] }, automatic: {} },
+    { title: "explicit original automatic track", language: null, subtitles: { de: [german] }, automatic: { "en-orig": [english] }, automaticKey: "en-orig" },
+  ];
+  for (const { title, language, subtitles, automatic, automaticKey } of cases) {
+    await t.test(title, async () => {
+      const fake = await fakeDownloader({
+        language,
+        subtitles,
+        automatic_captions: automatic,
+      });
+      try {
+        await withEnv({ YTDLP_PATH: fake.script, YTDLP_PYTHON: process.execPath, YOUTUBE_COOKIES_FILE: undefined, YOUTUBE_COOKIES_FROM_BROWSER: undefined }, async () => {
+          const result = await new YouTubeAdapter().resolve({ ...request, url: "https://youtu.be/jNQXAC9IVRw", language: "zh" }, context());
+          assert.equal(result.captions.status, "available");
+          assert.equal(result.captions.language, "en");
+          assert.equal(result.captions.kind, automaticKey ? "automatic" : "manual");
+          assert.deepEqual(result.captions.cues, [{ start: 1, end: 3, content: "A platform caption" }]);
+          const warnings = result.warnings.join(" ");
+          assert.match(warnings, /\ben\b/);
+          if (!language && !automaticKey) assert.match(warnings, /unknown|unverified|not (?:confirmed|known)/i);
+          const args = JSON.parse(await fs.readFile(fake.log, "utf8")) as string[];
+          assert.ok(args.includes("--skip-download"));
+          assert.ok(args.includes(automaticKey ? "--write-auto-subs" : "--write-subs"));
+          assert.equal(args[args.indexOf("--sub-langs") + 1], `^${automaticKey ?? "en"}$`);
+        });
+      } finally { await fs.rm(fake.directory, { recursive: true, force: true }); }
+    });
+  }
+});
+
+test("YouTube leaves captions absent when only other languages or unverified automatic tracks remain", async (t) => {
+  const cases = [
+    { title: "known source lacks an untranslated JSON3 track", metadata: {
+      language: "en",
+      subtitles: {
+        en: [{ ext: "vtt", url: "https://www.youtube.com/api/timedtext?lang=en" }],
+        de: [{ ext: "json3", url: "https://www.youtube.com/api/timedtext?lang=de" }],
+      },
+      automatic_captions: { en: [{ ext: "json3", url: "https://www.youtube.com/api/timedtext?lang=de&tlang=en" }] },
+    } },
+    { title: "unknown source has only an unverified automatic track", metadata: {
+      language: null, subtitles: {},
+      automatic_captions: { en: [{ ext: "json3", url: "https://www.youtube.com/api/timedtext?lang=en" }] },
+    } },
+  ];
+  for (const { title, metadata } of cases) {
+    await t.test(title, async () => {
+      const fake = await fakeDownloader(metadata);
+      try {
+        await withEnv({ YTDLP_PATH: fake.script, YTDLP_PYTHON: process.execPath, YOUTUBE_COOKIES_FILE: undefined, YOUTUBE_COOKIES_FROM_BROWSER: undefined }, async () => {
+          const result = await new YouTubeAdapter().resolve({ ...request, url: "https://youtu.be/jNQXAC9IVRw", language: "zh" }, context());
+          assert.equal(result.captions.status, "absent");
+          assert.deepEqual(result.captions.cues, []);
+          const args = JSON.parse(await fs.readFile(fake.log, "utf8")) as string[];
+          assert.ok(args.includes("--dump-single-json"));
+          assert.ok(!args.includes("--write-subs"));
+          assert.ok(!args.includes("--write-auto-subs"));
+        });
+      } finally { await fs.rm(fake.directory, { recursive: true, force: true }); }
+    });
+  }
 });
 
 test("downloader cancellation is bounded and diagnostics omit signed URL parameters", async () => {
