@@ -73,7 +73,7 @@ Choose capabilities based on what Catalyst needs to read. These settings control
 | Gemini | A multimodal model handles text, images, video, and extracted audio. Catalyst uses the same model to transcribe the audio. | The Gemini adapter is implemented. Native image-note Schema has SDK and mock coverage; verify the exact model and account in use. |
 | StepFun | `step-3.7-flash` handles text, images, and video; `stepaudio-2.5-asr` handles transcription. | Live video and ASR runs are recorded. Native image-note Schema was verified with this analysis model on Step Plan. |
 
-Use [`.env.example`](./.env.example) as a template and enable one configuration block in your local `.env`. Catalyst currently selects one provider per server process; it does not route text, vision, and transcription to different providers. See [model setup and compatibility](./docs/model-compatibility.md) for settings, inherited defaults, and validation details.
+Use [`.env.example`](./.env.example) as a template and enable one configuration block in your local `.env`. The selected provider handles text, vision, and transcription for that server process. See [model setup and compatibility](./docs/model-compatibility.md) for configuration and validation details.
 
 ## Start the MCP server
 

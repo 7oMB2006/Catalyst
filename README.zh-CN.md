@@ -75,7 +75,7 @@ FFMPEG_PATH=/absolute/path/to/ffmpeg
 | Gemini | 一个支持文字、图片、视频和音频输入的多模态模型；Catalyst 把提取出的音频交给同一个模型转写。 | 已接入 Gemini，图文原生 Schema 有 SDK 和模拟测试；具体模型与账号仍需实测。 |
 | 阶跃星辰（StepFun） | `step-3.7-flash` 负责文字、图片和视频理解，`stepaudio-2.5-asr` 负责音频转写。 | 已有真实视频及转写记录；图文原生 Schema 在 Step Plan 的这套配置上实测过。 |
 
-参照 [`.env.example`](./.env.example)，在本地 `.env` 中启用一组配置。当前一次运行选择一个 Provider，暂不支持把文字、视觉和转写分别接到不同 Provider。具体设置、历史默认值及验证范围见[模型配置与兼容记录](./docs/model-compatibility.md)。
+参照 [`.env.example`](./.env.example)，在本地 `.env` 中启用一组配置。每个服务进程使用同一个 Provider 处理文字、视觉和转写。具体配置及验证范围见[模型配置与兼容记录](./docs/model-compatibility.md)。
 
 ## 接入 MCP
 

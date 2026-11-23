@@ -21,14 +21,13 @@ the configured model and endpoint, run a small real read for each capability
 you plan to use. See [core reader acceptance](./core-reader-acceptance.md)
 for bounded examples. Platform access can fail independently of model support.
 
-## Runtime defaults for existing installations
+## Runtime defaults
 
-When `CODEX_VIDEO_PROVIDER` is absent, Catalyst still selects `stepfun` for
-compatibility with configurations inherited from BVR. The request code uses
-`step-3.7-flash` and `stepaudio-2.5-asr` if their StepFun overrides are absent.
-The Gemini route still falls back to `gemini-2.5-flash` when
-`GEMINI_VIDEO_MODEL` is absent; for a new Gemini setup, set the model ID
-explicitly because [Google has deprecated that fallback](https://aistudio.google.com/docs/deprecations#gemini-2.5-flash-models).
+If `CODEX_VIDEO_PROVIDER` is unset, the runtime uses `stepfun`. When model
+overrides are unset, StepFun uses `step-3.7-flash` for analysis and
+`stepaudio-2.5-asr` for transcription. Gemini uses `gemini-2.5-flash` if
+`GEMINI_VIDEO_MODEL` is unset. Set the Gemini model ID explicitly because
+[Google has deprecated `gemini-2.5-flash`](https://aistudio.google.com/docs/deprecations#gemini-2.5-flash-models).
 
 ## Status vocabulary
 
