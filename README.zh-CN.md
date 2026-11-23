@@ -245,6 +245,8 @@ npm run build
 
 离线测试不需要 Provider 凭据，也不访问真实视频平台。编译后的通用工具已实测 YouTube 字幕、YouTube 非零起点视觉区间，以及 B 站音频/ASR 回退。B 站结果为 `partial`，明确记录字幕访问限制和丢弃无效引用的告警。这些检查验证集成和引用结构，不代表模型准确率。具体结果与部署检查见[验证记录](./docs/validation.md)。
 
+运行 `npm run test:core` 快速检查 YouTube 字幕回退、B 站重启续跑和小红书部分结果。真实样本与内容核对方法见[核心读源验收](./docs/core-reader-acceptance.md)。
+
 完成 build 后，生产部署可以保留 `dist` 并运行 `npm ci --omit=dev`。`npm start` 和 `npm run doctor` 均运行编译后的 JavaScript，无需 `tsx`；外部媒体依赖和 Provider 配置仍需通过 doctor。
 
 ## 许可证

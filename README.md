@@ -243,6 +243,8 @@ npm run build
 
 Tests are local and do not require provider credentials or live video platforms. The compiled generic tool has been exercised on YouTube captions, a nonzero YouTube visual window, and Bilibili audio/ASR fallback. The latter returned `partial` with explicit caption access and discarded-citation warnings. These checks validate integration and citation structure, not model accuracy. Exact observations and deployment checks are listed in [validation](./docs/validation.md).
 
+Run `npm run test:core` for a quick check of YouTube caption fallback, Bilibili restart and resume, and Xiaohongshu partial results. See the [core reader checks](./docs/core-reader-acceptance.md) for the live samples and how to compare answers with their sources.
+
 After building, a production deployment can retain `dist` and install with `npm ci --omit=dev`. Both `npm start` and `npm run doctor` then run compiled JavaScript without `tsx`; external media dependencies and provider configuration still need to pass doctor.
 
 ## License

@@ -102,7 +102,7 @@ syncBuiltinESMExports();
   }
 });
 
-test("compiled default stdio resumes only unfinished source windows across processes and preserves saved raw citations", { timeout: 20_000 }, async () => {
+test("core: compiled Bilibili reading resumes only the failed middle window in a fresh stdio process", { timeout: 20_000 }, async () => {
   const directory = await fs.mkdtemp(join(tmpdir(), "catalyst default resume "));
   const sessions = join(directory, "sessions"), tasks = join(directory, "tasks");
   const hook = join(directory, "caption-provider.mjs"), log = join(directory, "requests.jsonl");
@@ -121,13 +121,13 @@ globalThis.fetch = async (input, init = {}) => {
   const url = new URL(typeof input === "string" ? input : input.url ?? input.toString());
   if (url.hostname === "api.bilibili.com" && url.pathname === "/x/web-interface/view") {
     record({kind:"metadata"});
-    return json({code:0,data:{aid:1,cid:2,title:"Two caption windows",desc:"Attention",duration:240,owner:{name:"Fixture",mid:1},pubdate:1,tname:"Knowledge",stat:{},pages:[{cid:2,duration:240,part:"Selected source"}]}});
+    return json({code:0,data:{aid:1,cid:2,title:"Three caption windows",desc:"Attention",duration:360,owner:{name:"Fixture",mid:1},pubdate:1,tname:"Knowledge",stat:{},pages:[{cid:2,duration:360,part:"Selected source"}]}});
   }
   if (url.hostname === "api.bilibili.com" && url.pathname === "/x/tag/archive/tags") return json({code:0,data:[]});
   if (url.hostname === "api.bilibili.com" && url.pathname === "/x/player/v2") return json({code:0,data:{subtitle:{subtitles:[{subtitle_url:"https://captions.fixture/attention.json",lan:"en"}]}}});
   if (url.hostname === "captions.fixture") {
     record({kind:"captions"});
-    return json({body:[{from:0,to:120,content:"Queries and keys determine attention weights."},{from:120,to:240,content:"Values are combined using the resulting weights."}]});
+    return json({body:[{from:0,to:120,content:"Queries and keys determine attention weights."},{from:120,to:240,content:"Values are combined using the resulting weights."},{from:240,to:360,content:"The output is the weighted sum of values."}]});
   }
   if (url.hostname === "provider.fixture" && url.pathname === "/v1/chat/completions") {
     const prompt = JSON.parse(init.body).messages[0].content;
@@ -136,7 +136,7 @@ globalThis.fetch = async (input, init = {}) => {
     const evidence = JSON.parse(prompt.slice(prompt.lastIndexOf(marker) + marker.length));
     const primary = evidence.find(item => item.kind !== "metadata");
     record({kind:"model",phase:synthesis ? "synthesis" : primary.id});
-    const report = !synthesis && primary.id === process.env.CATALYST_TEST_FAIL_WINDOW ? "unstructured partial fixture" : JSON.stringify({analysis:"The supplied captions describe attention.",findings:[{statement:"Attention uses query-key weights.",evidence_ids:[primary.id],limitations:["Fixture model interpretation"]}],relevance_score:1});
+    const report = !synthesis && primary.id === process.env.CATALYST_TEST_FAIL_WINDOW ? "unstructured partial fixture" : JSON.stringify({analysis:primary.content,findings:[{statement:primary.content,evidence_ids:[primary.id],limitations:["Fixture model interpretation"]}],relevance_score:1});
     return json({choices:[{message:{content:report}}]});
   }
   return blocked(url.hostname + url.pathname);
@@ -154,13 +154,23 @@ globalThis.fetch = async (input, init = {}) => {
       segment_seconds: 120, max_detail_windows: 0, timeout_seconds: 15, window_timeout_seconds: 15,
     } }));
     assert.notEqual(started.isError, true);
+    assert.deepEqual(JSON.parse(textContent(started)), started.structuredContent);
     const partial = longVideoResultSchema.parse(started.structuredContent);
-    assert.equal(partial.status, "partial"); assert.deepEqual(partial.segments.map(segment => segment.status), ["complete", "partial"]);
+    assert.equal(partial.status, "partial"); assert.deepEqual(partial.segments.map(segment => segment.status), ["complete", "partial", "complete"]);
     assert.deepEqual(partial.coverage.unreviewed, [{start_seconds:120,end_seconds:240}]); assert.ok(partial.session);
-    const retained = partial.evidence.filter(item => partial.segments[0].evidence_ids.includes(item.id));
-    assert.ok(retained.some(item => item.kind === "caption" && item.content?.includes("Queries and keys")));
+    const successful = [partial.segments[0], partial.segments[2]];
+    const retained = successful.map(segment => {
+      const raw = partial.evidence.find(item => item.kind === "caption" && segment.evidence_ids.includes(item.id));
+      assert.ok(raw);
+      return raw;
+    });
+    assert.deepEqual(retained.map(item => item.time_range), [
+      {start_seconds:0,end_seconds:120}, {start_seconds:240,end_seconds:360},
+    ]);
+    assert.ok(retained[0].content?.includes("Queries and keys determine attention weights."));
+    assert.ok(retained[1].content?.includes("The output is the weighted sum of values."));
     const before = await requests();
-    assert.deepEqual(before.filter(item => item.kind === "model").map(item => item.phase), ["overview:1:source", "overview:2:source", "synthesis"]);
+    assert.deepEqual(before.filter(item => item.kind === "model").map(item => item.phase), ["overview:1:source", "overview:2:source", "overview:3:source", "synthesis"]);
     await client.close(); client = undefined;
 
     client = await connect(sessions, "index", { hook, compiled: true, env: { ...env, CATALYST_TEST_FAIL_WINDOW: "" } });
@@ -168,10 +178,12 @@ globalThis.fetch = async (input, init = {}) => {
     assert.deepEqual(longVideoResultSchema.parse(read.structuredContent), partial); assert.deepEqual(await requests(), before);
     const resumed = CallToolResultSchema.parse(await client.callTool({name:"resume_long_video_research",arguments:{session_id:partial.session.id,timeout_seconds:15,window_timeout_seconds:15}}));
     assert.notEqual(resumed.isError, true);
+    assert.deepEqual(JSON.parse(textContent(resumed)), resumed.structuredContent);
     const complete = longVideoResultSchema.parse(resumed.structuredContent);
     assert.equal(complete.status, "complete"); assert.equal(complete.session?.id, partial.session.id);
-    assert.equal(complete.session?.reused_segments, 1); assert.equal(complete.session?.processed_segments, 1);
-    assert.deepEqual(complete.segments[0], partial.segments[0]);
+    assert.deepEqual(complete.segments.map(segment => segment.status), ["complete", "complete", "complete"]);
+    assert.equal(complete.session?.reused_segments, 2); assert.equal(complete.session?.processed_segments, 1);
+    assert.deepEqual([complete.segments[0], complete.segments[2]], successful);
     for (const item of retained) assert.deepEqual(complete.evidence.find(evidence => evidence.id === item.id), item);
     assert.equal(complete.coverage.overview_complete, true); assert.deepEqual(complete.coverage.unreviewed, []);
     const after = await requests(), fresh = after.slice(before.length);
